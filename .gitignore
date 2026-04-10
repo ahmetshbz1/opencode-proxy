@@ -1,0 +1,19 @@
+# Build çıktısı
+opencode-proxy
+/bin/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Bağımlılıklar
+/vendor/
+
+# Hassas bilgi — API anahtarları burada
+config.json
