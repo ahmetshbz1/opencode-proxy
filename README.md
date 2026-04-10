@@ -93,14 +93,14 @@ Claude Code `settings.json`:
 
 ## Desteklenen Özellikler
 
-- ✅ Streaming (SSE) — tool kullanımı dahil
-- ✅ Tool calling (function calling)
-- ✅ Sistem mesajları
-- ✅ Çoklu sağlayıcı failover
-- ✅ Öncelik tabanlı yönlendirme
-- ✅ Sıcak yapılandırma yeniden yükleme
-- ✅ Anthropic passthrough (sıfır ek yük)
-- ✅ OpenAI format çevirisi
+- Streaming (SSE) — tool kullanımı dahil
+- Tool calling (function calling)
+- Sistem mesajları
+- Çoklu sağlayıcı failover
+- Öncelik tabanlı yönlendirme
+- Sıcak yapılandırma yeniden yükleme
+- Anthropic passthrough (sıfır ek yük)
+- OpenAI format çevirisi
 
 ## Sağlayıcı Failover Davranışı
 

@@ -33,7 +33,7 @@ func tryAnthropicPassthrough(w http.ResponseWriter, r *http.Request, body []byte
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		log.Printf("✅ %s başarılı (anthropic passthrough)", p.Name)
+		log.Printf("[OK] %s başarılı (anthropic passthrough)", p.Name)
 		for k, vv := range resp.Header {
 			for _, v := range vv {
 				if !strings.EqualFold(k, "content-length") {
@@ -47,7 +47,7 @@ func tryAnthropicPassthrough(w http.ResponseWriter, r *http.Request, body []byte
 	}
 
 	errMsg := fmt.Sprintf("HTTP %d", resp.StatusCode)
-	log.Printf("❌ %s başarısız: %s → sonrakine geçiliyor", p.Name, errMsg)
+	log.Printf("[FAIL] %s başarısız: %s → sonrakine geçiliyor", p.Name, errMsg)
 	return false, errMsg
 }
 

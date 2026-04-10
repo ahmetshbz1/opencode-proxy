@@ -41,7 +41,7 @@ func tryOpenAIProxy(w http.ResponseWriter, r *http.Request, p config.Provider, a
 
 	if resp.StatusCode != http.StatusOK {
 		errMsg := fmtError(resp)
-		log.Printf("❌ %s başarısız: %s → sonrakine geçiliyor", p.Name, errMsg)
+		log.Printf("[FAIL] %s başarısız: %s → sonrakine geçiliyor", p.Name, errMsg)
 
 		if resp.StatusCode == http.StatusTooManyRequests ||
 			resp.StatusCode == http.StatusUnauthorized ||
@@ -52,7 +52,7 @@ func tryOpenAIProxy(w http.ResponseWriter, r *http.Request, p config.Provider, a
 		return false, errMsg
 	}
 
-	log.Printf("✅ %s başarılı (openai proxy)", p.Name)
+	log.Printf("[OK] %s başarılı (openai proxy)", p.Name)
 
 	if antReq.Stream {
 		streamResponse(w, resp, antReq.Model)

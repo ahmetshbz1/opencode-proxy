@@ -19,9 +19,9 @@ func main() {
 	}
 
 	cfg := config.Get()
-	log.Printf("🎧 Anthropic proxy başlatılıyor (port :%d)", cfg.Port)
+	log.Printf("Anthropic proxy başlatılıyor (port :%d)", cfg.Port)
 	for _, p := range cfg.Providers {
-		log.Printf("  📤 %s (type=%s, priority=%d)", p.Name, p.Type, p.Priority)
+		log.Printf("  %s (type=%s, priority=%d)", p.Name, p.Type, p.Priority)
 	}
 
 	http.HandleFunc("/v1/messages", proxy.HandleMessages)

@@ -48,7 +48,7 @@ func HandleMessages(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			lastErr = errStr
-			log.Printf("❌ %s başarısız: %s → sonrakine geçiliyor", p.Name, errStr)
+			log.Printf("[FAIL] %s başarısız: %s → sonrakine geçiliyor", p.Name, errStr)
 
 		case provider.OpenAI:
 			cfg := config.Provider{
@@ -60,7 +60,7 @@ func HandleMessages(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			lastErr = errStr
-			log.Printf("❌ %s başarısız: %s → sonrakine geçiliyor", p.Name, errStr)
+			log.Printf("[FAIL] %s başarısız: %s → sonrakine geçiliyor", p.Name, errStr)
 		}
 	}
 
