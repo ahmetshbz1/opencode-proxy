@@ -17,6 +17,18 @@ type Request struct {
 	TopK          *int            `json:"top_k,omitempty"`
 	StopSequences []string        `json:"stop_sequences,omitempty"`
 	Tools         []Tool          `json:"tools,omitempty"`
+	Thinking      *Thinking       `json:"thinking,omitempty"`
+}
+
+type Thinking struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+}
+
+type ThinkingBlock struct {
+	Type      string `json:"type"`
+	Thinking  string `json:"thinking"`
+	Signature string `json:"signature,omitempty"`
 }
 
 type Message struct {

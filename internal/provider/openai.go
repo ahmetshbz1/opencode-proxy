@@ -116,6 +116,15 @@ func (p *OpenAIProvider) nonStreamResponse(w http.ResponseWriter, resp *http.Res
 
 	if len(oaiResp.Choices) > 0 {
 		choice := oaiResp.Choices[0]
+
+		// Thinking block'u content'in başına ekle
+		if choice.Message.ReasoningContent != nil && *choice.Message.ReasoningContent != "" {
+			content = append(content, anthropic.ThinkingBlock{
+				Type:     "thinking",
+				Thinking: *choice.Message.ReasoningContent,
+			})
+		}
+
 		if choice.Message.Content != nil && *choice.Message.Content != "" {
 			content = append(content, anthropic.TextBlock{Type: "text", Text: *choice.Message.Content})
 		}
@@ -183,18 +192,63 @@ func (p *OpenAIProvider) streamResponse(w http.ResponseWriter, resp *http.Respon
 		},
 	})
 
-	textBlockIdx := 0
-	sse.Send(w, flusher, "content_block_start", map[string]any{
-		"type":          "content_block_start",
-		"index":         textBlockIdx,
-		"content_block": map[string]any{"type": "text", "text": ""},
-	})
-
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+	type blockState struct {
+		idx   int
+		open  bool
+		bType string // "thinking" veya "text"
+	}
+
+	thinkingBlock := blockState{idx: 0, bType: "thinking"}
+	textBlock := blockState{idx: 1, bType: "text"}
+	nextBlockIdx := 2
+	thinkingOpen := false
+	textOpen := false
+
 	outputTokens := 0
 	pending := make(map[int]*openai.ToolCallAccumulator)
+
+	closeBlock := func(bs *blockState) {
+		if !bs.open {
+			return
+		}
+		sse.Send(w, flusher, "content_block_stop", map[string]any{
+			"type": "content_block_stop", "index": bs.idx,
+		})
+		bs.open = false
+	}
+
+	// İlk reasoning_content geldiğinde thinking block aç
+	ensureThinkingOpen := func() {
+		if thinkingOpen {
+			return
+		}
+		sse.Send(w, flusher, "content_block_start", map[string]any{
+			"type":          "content_block_start",
+			"index":         thinkingBlock.idx,
+			"content_block": map[string]any{"type": "thinking", "thinking": ""},
+		})
+		thinkingBlock.open = true
+		thinkingOpen = true
+	}
+
+	// İlk text geldiğinde text block aç
+	ensureTextOpen := func() {
+		if textOpen {
+			return
+		}
+		closeBlock(&thinkingBlock)
+		thinkingOpen = false
+		sse.Send(w, flusher, "content_block_start", map[string]any{
+			"type":          "content_block_start",
+			"index":         textBlock.idx,
+			"content_block": map[string]any{"type": "text", "text": ""},
+		})
+		textBlock.open = true
+		textOpen = true
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -224,33 +278,63 @@ func (p *OpenAIProvider) streamResponse(w http.ResponseWriter, resp *http.Respon
 			acc.Arguments += tcDelta.Function.Arguments
 		}
 
-		if choice.Delta.Content != "" {
+		// Reasoning content → thinking block
+		if choice.Delta.ReasoningContent != "" {
+			ensureThinkingOpen()
 			outputTokens++
 			sse.Send(w, flusher, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
-				"index": textBlockIdx,
+				"index": thinkingBlock.idx,
+				"delta": map[string]any{"type": "thinking_delta", "thinking": choice.Delta.ReasoningContent},
+			})
+		}
+
+		// Normal content → text block
+		if choice.Delta.Content != "" {
+			ensureTextOpen()
+			outputTokens++
+			sse.Send(w, flusher, "content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": textBlock.idx,
 				"delta": map[string]any{"type": "text_delta", "text": choice.Delta.Content},
 			})
 		}
 
 		if choice.FinishReason != nil {
-			sse.Send(w, flusher, "content_block_stop", map[string]any{
-				"type": "content_block_stop", "index": textBlockIdx,
-			})
+			closeBlock(&thinkingBlock)
+			thinkingOpen = false
+			closeBlock(&textBlock)
+			textOpen = false
 
-			for i := range len(pending) {
+			// Tool call block'ları - Anthropic streaming protokolüne uygun:
+			// content_block_start: input = {}
+			// content_block_delta: input_json_delta ile partial_json
+			// content_block_stop
+			for i := 0; i < len(pending); i++ {
 				tc := pending[i]
+				if tc == nil {
+					continue
+				}
 				args := tc.Arguments
 				if args == "" {
 					args = "{}"
 				}
-				idx := textBlockIdx + 1 + i
+				idx := nextBlockIdx
+				nextBlockIdx++
 				sse.Send(w, flusher, "content_block_start", map[string]any{
 					"type":  "content_block_start",
 					"index": idx,
 					"content_block": map[string]any{
 						"type": "tool_use", "id": tc.ID, "name": tc.Name,
-						"input": json.RawMessage(args),
+						"input": map[string]any{},
+					},
+				})
+				sse.Send(w, flusher, "content_block_delta", map[string]any{
+					"type":  "content_block_delta",
+					"index": idx,
+					"delta": map[string]any{
+						"type":         "input_json_delta",
+						"partial_json": args,
 					},
 				})
 				sse.Send(w, flusher, "content_block_stop", map[string]any{

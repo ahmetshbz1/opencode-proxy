@@ -50,9 +50,10 @@ type StreamChunk struct {
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
-			Role      string          `json:"role,omitempty"`
-			Content   string          `json:"content,omitempty"`
-			ToolCalls []ToolCallDelta `json:"tool_calls,omitempty"`
+			Role             string          `json:"role,omitempty"`
+			Content          string          `json:"content,omitempty"`
+			ReasoningContent string          `json:"reasoning_content,omitempty"`
+			ToolCalls        []ToolCallDelta `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -78,9 +79,10 @@ type Response struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Message struct {
-			Role      string     `json:"role"`
-			Content   *string    `json:"content"`
-			ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+			Role             string     `json:"role"`
+			Content          *string    `json:"content"`
+			ReasoningContent *string    `json:"reasoning_content,omitempty"`
+			ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`

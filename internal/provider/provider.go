@@ -38,6 +38,7 @@ type Registry struct {
 	client       *http.Client
 	logger       *slog.Logger
 	persistOAuth func(name string, oauth config.OAuthConfig) error
+	active       *ActiveTracker
 }
 
 type providerEntry struct {
@@ -49,7 +50,12 @@ func NewRegistry(client *http.Client, logger *slog.Logger) *Registry {
 	return &Registry{
 		client: client,
 		logger: logger,
+		active: NewActiveTracker(),
 	}
+}
+
+func (r *Registry) Active() *ActiveTracker {
+	return r.active
 }
 
 func (r *Registry) RebuildFromConfig(cfgs []config.Provider) {
