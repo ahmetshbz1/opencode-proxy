@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -86,9 +85,6 @@ func (r *Registry) RebuildFromConfig(cfgs []config.Provider) {
 			})
 		}
 	}
-	slices.SortFunc(r.providers, func(a, b providerEntry) int {
-		return a.provider.Priority() - b.provider.Priority()
-	})
 }
 
 func (r *Registry) Ordered() []Provider {
@@ -118,7 +114,7 @@ func (r *Registry) OrderedForModel(model string) []Provider {
 		}
 	}
 	if len(explicit) > 0 {
-		return append(explicit, catchAll...)
+		return explicit
 	}
 	return catchAll
 }

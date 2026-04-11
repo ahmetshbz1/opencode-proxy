@@ -121,7 +121,7 @@ func TestOpenAINonStream(t *testing.T) {
 	}
 }
 
-func TestRegistryOrdered(t *testing.T) {
+func TestRegistryOrderedPreservesConfigOrder(t *testing.T) {
 	registry := NewRegistry(http.DefaultClient, newTestLogger())
 	registry.RebuildFromConfig([]config.Provider{
 		{Name: "c", Type: "anthropic", BaseURL: "http://c", APIKey: "k", Priority: 3},
@@ -133,75 +133,103 @@ func TestRegistryOrdered(t *testing.T) {
 	if len(ordered) != 3 {
 		t.Fatalf("count = %d, want 3", len(ordered))
 	}
-	if ordered[0].Name() != "a" {
-		t.Errorf("ilk = %q, want %q", ordered[0].Name(), "a")
+	if ordered[0].Name() != "c" {
+		t.Errorf("ilk = %q, want %q", ordered[0].Name(), "c")
 	}
-	if ordered[1].Name() != "b" {
-		t.Errorf("ikinci = %q, want %q", ordered[1].Name(), "b")
+	if ordered[1].Name() != "a" {
+		t.Errorf("ikinci = %q, want %q", ordered[1].Name(), "a")
 	}
-	if ordered[2].Name() != "c" {
-		t.Errorf("üçüncü = %q, want %q", ordered[2].Name(), "c")
+	if ordered[2].Name() != "b" {
+		t.Errorf("üçüncü = %q, want %q", ordered[2].Name(), "b")
 	}
 }
 
 func TestRegistryOrderedForModel(t *testing.T) {
 	registry := NewRegistry(http.DefaultClient, newTestLogger())
 	registry.RebuildFromConfig([]config.Provider{
-		{Name: "glm", Type: "anthropic", BaseURL: "http://glm", APIKey: "k", Priority: 1, Models: []string{"glm-5.1"}},
-		{Name: "codex", Type: "codex", BaseURL: "http://codex", Priority: 2, OAuth: &config.OAuthConfig{RefreshToken: "r"}, Models: []string{"gpt-5.4", "gpt-5.4-*"}},
-		{Name: "fallback", Type: "anthropic", BaseURL: "http://fallback", APIKey: "k", Priority: 3},
+		{Name: "glm", Type: "anthropic", BaseURL: "http://glm", APIKey: "k", Priority: 0, Models: []string{"glm-5.1"}},
+		{Name: "codex", Type: "codex", BaseURL: "http://codex", Priority: 0, OAuth: &config.OAuthConfig{RefreshToken: "r"}, Models: []string{"gpt-5.4", "gpt-5.4-*"}},
+		{Name: "fallback", Type: "anthropic", BaseURL: "http://fallback", APIKey: "k", Priority: 0},
 	})
 
 	gotGPT := registry.OrderedForModel("gpt-5.4")
-	if len(gotGPT) != 2 {
-		t.Fatalf("gpt providers = %d, want 2", len(gotGPT))
+	if len(gotGPT) != 1 {
+		t.Fatalf("gpt providers = %d, want 1", len(gotGPT))
 	}
 	if gotGPT[0].Name() != "codex" {
 		t.Fatalf("gpt ilk provider = %q, want codex", gotGPT[0].Name())
 	}
-	if gotGPT[1].Name() != "fallback" {
-		t.Fatalf("gpt ikinci provider = %q, want fallback", gotGPT[1].Name())
-	}
 
 	gotGLM := registry.OrderedForModel("glm-5.1")
-	if len(gotGLM) != 2 {
-		t.Fatalf("glm providers = %d, want 2", len(gotGLM))
+	if len(gotGLM) != 1 {
+		t.Fatalf("glm providers = %d, want 1", len(gotGLM))
 	}
 	if gotGLM[0].Name() != "glm" {
 		t.Fatalf("glm ilk provider = %q, want glm", gotGLM[0].Name())
 	}
-	if gotGLM[1].Name() != "fallback" {
-		t.Fatalf("glm ikinci provider = %q, want fallback", gotGLM[1].Name())
-	}
 
 	gotWildcard := registry.OrderedForModel("gpt-5.4-mini")
-	if len(gotWildcard) != 2 {
-		t.Fatalf("wildcard providers = %d, want 2", len(gotWildcard))
+	if len(gotWildcard) != 1 {
+		t.Fatalf("wildcard providers = %d, want 1", len(gotWildcard))
 	}
 	if gotWildcard[0].Name() != "codex" {
 		t.Fatalf("wildcard ilk provider = %q, want codex", gotWildcard[0].Name())
 	}
-	if gotWildcard[1].Name() != "fallback" {
-		t.Fatalf("wildcard ikinci provider = %q, want fallback", gotWildcard[1].Name())
-	}
 }
 
-func TestRegistryOrderedForModelPrefersExplicitMatchesOverCatchAll(t *testing.T) {
+func TestRegistryOrderedForModelSkipsCatchAllWhenExplicitExists(t *testing.T) {
 	registry := NewRegistry(http.DefaultClient, newTestLogger())
 	registry.RebuildFromConfig([]config.Provider{
-		{Name: "glm", Type: "anthropic", BaseURL: "http://glm", APIKey: "k", Priority: 1, Models: []string{"glm-5.1"}},
-		{Name: "catch-all-openai", Type: "openai", BaseURL: "http://oai", APIKey: "k", Priority: 2},
-		{Name: "codex", Type: "codex", BaseURL: "http://codex", Priority: 3, OAuth: &config.OAuthConfig{RefreshToken: "r"}, Models: []string{"gpt-5.4", "gpt-5.4-*"}},
+		{Name: "glm", Type: "anthropic", BaseURL: "http://glm", APIKey: "k", Priority: 0, Models: []string{"glm-5.1"}},
+		{Name: "catch-all-openai", Type: "openai", BaseURL: "http://oai", APIKey: "k", Priority: 0},
+		{Name: "codex", Type: "codex", BaseURL: "http://codex", Priority: 0, OAuth: &config.OAuthConfig{RefreshToken: "r"}, Models: []string{"gpt-5.4", "gpt-5.4-*"}},
 	})
 
 	got := registry.OrderedForModel("gpt-5.4")
-	if len(got) != 2 {
-		t.Fatalf("providers = %d, want 2", len(got))
+	if len(got) != 1 {
+		t.Fatalf("providers = %d, want 1", len(got))
 	}
 	if got[0].Name() != "codex" {
 		t.Fatalf("ilk provider = %q, want codex", got[0].Name())
 	}
-	if got[1].Name() != "catch-all-openai" {
-		t.Fatalf("ikinci provider = %q, want catch-all-openai", got[1].Name())
+}
+
+func TestRegistryOrderedForModelKeepsExplicitModelGroupOrder(t *testing.T) {
+	registry := NewRegistry(http.DefaultClient, newTestLogger())
+	registry.RebuildFromConfig([]config.Provider{
+		{Name: "opencode-go", Type: "openai", BaseURL: "http://oai", APIKey: "k", Priority: 0, Models: []string{"glm-5.1", "glm-*"}},
+		{Name: "z.ai", Type: "anthropic", BaseURL: "http://glm", APIKey: "k", Priority: 0, Models: []string{"glm-5.1", "glm-*"}},
+		{Name: "codex", Type: "codex", BaseURL: "http://codex", Priority: 0, OAuth: &config.OAuthConfig{RefreshToken: "r"}, Models: []string{"gpt-5.4", "gpt-5.4-*"}},
+	})
+
+	got := registry.OrderedForModel("glm-5.1")
+	if len(got) != 2 {
+		t.Fatalf("providers = %d, want 2", len(got))
+	}
+	if got[0].Name() != "opencode-go" {
+		t.Fatalf("ilk provider = %q, want opencode-go", got[0].Name())
+	}
+	if got[1].Name() != "z.ai" {
+		t.Fatalf("ikinci provider = %q, want z.ai", got[1].Name())
+	}
+}
+
+func TestRegistryOrderedForModelFallsBackToCatchAllWithoutExplicitMatch(t *testing.T) {
+	registry := NewRegistry(http.DefaultClient, newTestLogger())
+	registry.RebuildFromConfig([]config.Provider{
+		{Name: "codex", Type: "codex", BaseURL: "http://codex", Priority: 0, OAuth: &config.OAuthConfig{RefreshToken: "r"}, Models: []string{"gpt-5.4", "gpt-5.4-*"}},
+		{Name: "catch-all-openai", Type: "openai", BaseURL: "http://oai", APIKey: "k", Priority: 0},
+		{Name: "catch-all-anthropic", Type: "anthropic", BaseURL: "http://anthropic", APIKey: "k", Priority: 0},
+	})
+
+	got := registry.OrderedForModel("bilinmeyen-model")
+	if len(got) != 2 {
+		t.Fatalf("providers = %d, want 2", len(got))
+	}
+	if got[0].Name() != "catch-all-openai" {
+		t.Fatalf("ilk provider = %q, want catch-all-openai", got[0].Name())
+	}
+	if got[1].Name() != "catch-all-anthropic" {
+		t.Fatalf("ikinci provider = %q, want catch-all-anthropic", got[1].Name())
 	}
 }

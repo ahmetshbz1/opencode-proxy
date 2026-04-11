@@ -6,14 +6,37 @@
       "type": "anthropic",
       "base_url": "https://api.z.ai/api/anthropic",
       "api_key": "Z_AI_API_KEY_BURAYA",
-      "priority": 1
+      "models": [
+        "glm-5.1",
+        "glm-*"
+      ],
+      "priority": 0
     },
     {
       "name": "opencode-go",
       "type": "openai",
       "base_url": "https://opencode.ai/zen/go/v1/chat/completions",
       "api_key": "OPENCODE_GO_API_KEY_BURAYA",
-      "priority": 2
+      "models": [
+        "glm-5.1",
+        "glm-*"
+      ],
+      "priority": 0
+    },
+    {
+      "name": "codex-oauth",
+      "type": "codex",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "api_key": "",
+      "oauth": {
+        "access_token": "CODEX_ACCESS_TOKEN_BURAYA",
+        "refresh_token": "CODEX_REFRESH_TOKEN_BURAYA"
+      },
+      "models": [
+        "gpt-5.4",
+        "gpt-5.4-*"
+      ],
+      "priority": 0
     }
   ]
 }

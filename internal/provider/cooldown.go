@@ -13,13 +13,13 @@ const (
 type ActiveTracker struct {
 	mu           sync.RWMutex
 	exhausted    map[string]time.Time // provider adı → ne zaman tükenildi
-	lastActive   map[string]string    // model → son başarılı provider adı
+	rrIndex      map[string]uint64    // model → round-robin sayaç
 }
 
 func NewActiveTracker() *ActiveTracker {
 	return &ActiveTracker{
-		exhausted:  make(map[string]time.Time),
-		lastActive: make(map[string]string),
+		exhausted: make(map[string]time.Time),
+		rrIndex:   make(map[string]uint64),
 	}
 }
 
@@ -55,19 +55,21 @@ func (t *ActiveTracker) ResetAll() {
 	t.exhausted = make(map[string]time.Time)
 }
 
-// SetLastActive, bir model için son başarılı provider'ı kaydeder.
-func (t *ActiveTracker) SetLastActive(model, providerName string) {
+// NextRRIndex, model için round-robin sayacını artırıp bir sonraki başlangıç indeksini döner.
+// Her çağrıda sayaç artar, böylece istekler provider'lar arasında dağıtılır.
+func (t *ActiveTracker) NextRRIndex(model string, providerCount int) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.lastActive[model] = providerName
+	idx := t.rrIndex[model]
+	t.rrIndex[model] = idx + 1
+	return int(idx % uint64(providerCount))
 }
 
-// LastActiveForModel, bir model için son başarılı provider adını döner.
-// Yoksa boş string döner.
-func (t *ActiveTracker) LastActiveForModel(model string) string {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.lastActive[model]
+// SetRRIndex, round-robin sayacını belirli bir değere set eder (başarılı istekten sonra).
+func (t *ActiveTracker) SetRRIndex(model string, idx uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rrIndex[model] = idx
 }
 
 // IsQuotaError, hatanın kota/limit tükenmesi olup olmadığını kontrol eder.
