@@ -3,7 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -22,68 +22,115 @@ type Provider struct {
 	Priority int    `json:"priority"`
 }
 
-var (
-	cfg  Config
-	mu   sync.RWMutex
-	once sync.Once
-	done chan struct{}
-)
+func (c *Config) Validate() error {
+	if c.Port <= 0 || c.Port > 65535 {
+		return fmt.Errorf("geçersiz port: %d", c.Port)
+	}
+	if len(c.Providers) == 0 {
+		return fmt.Errorf("en az bir sağlayıcı tanımlanmalı")
+	}
+	for i, p := range c.Providers {
+		if p.Name == "" {
+			return fmt.Errorf("sağlayıcı %d: isim boş olamaz", i)
+		}
+		if p.Type != "anthropic" && p.Type != "openai" {
+			return fmt.Errorf("sağlayıcı %d (%s): bilinmeyen tip %q", i, p.Name, p.Type)
+		}
+		if p.BaseURL == "" {
+			return fmt.Errorf("sağlayıcı %d (%s): base_url boş olamaz", i, p.Name)
+		}
+		if p.APIKey == "" {
+			return fmt.Errorf("sağlayıcı %d (%s): api_key boş olamaz", i, p.Name)
+		}
+	}
+	return nil
+}
 
-func Load(path string) error {
+func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("config okunamadı: %w", err)
+		return nil, fmt.Errorf("config okunamadı: %w", err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	return json.Unmarshal(data, &cfg)
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("config ayrıştırılamadı: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }
 
-func Get() Config {
-	mu.RLock()
-	defer mu.RUnlock()
-	return cfg
+type Manager struct {
+	mu         sync.RWMutex
+	config     *Config
+	configPath string
+	done       chan struct{}
+	logger     *slog.Logger
+	onChange   func(*Config)
 }
 
-func Providers() []Provider {
-	return Get().Providers
+func NewManager(path string, logger *slog.Logger) (*Manager, error) {
+	cfg, err := Load(path)
+	if err != nil {
+		return nil, err
+	}
+	m := &Manager{
+		config:     cfg,
+		configPath: path,
+		done:       make(chan struct{}),
+		logger:     logger,
+	}
+	return m, nil
 }
 
-func Watch(path string) {
-	done = make(chan struct{})
-	lastModified := time.Now()
+func (m *Manager) Get() *Config {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.config
+}
+
+func (m *Manager) OnChange(fn func(*Config)) {
+	m.onChange = fn
+}
+
+func (m *Manager) Watch() {
+	var lastMod time.Time
+	if info, err := os.Stat(m.configPath); err == nil {
+		lastMod = info.ModTime()
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
-		case <-done:
+		case <-m.done:
 			return
-		default:
-		}
-		time.Sleep(2 * time.Second)
-		info, err := os.Stat(path)
-		if err != nil {
-			continue
-		}
-		if info.ModTime().After(lastModified) {
-			lastModified = info.ModTime()
-			if err := Load(path); err != nil {
-				log.Printf("config reload hatası: %v", err)
-			} else {
-				log.Printf("config yeniden yüklendi")
+		case <-ticker.C:
+			info, err := os.Stat(m.configPath)
+			if err != nil {
+				continue
+			}
+			if info.ModTime().After(lastMod) {
+				lastMod = info.ModTime()
+				cfg, err := Load(m.configPath)
+				if err != nil {
+					m.logger.Error("config reload hatası", slog.String("error", err.Error()))
+					continue
+				}
+				m.mu.Lock()
+				m.config = cfg
+				m.mu.Unlock()
+				m.logger.Info("config yeniden yüklendi")
+				if m.onChange != nil {
+					m.onChange(cfg)
+				}
 			}
 		}
 	}
 }
 
-func Stop() {
-	if done != nil {
-		close(done)
-	}
-}
-
-func Init(path string) error {
-	if err := Load(path); err != nil {
-		return err
-	}
-	go Watch(path)
-	return nil
+func (m *Manager) Close() {
+	close(m.done)
 }

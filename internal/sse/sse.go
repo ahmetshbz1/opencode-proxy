@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-func Send(w http.ResponseWriter, flusher http.Flusher, eventType string, data interface{}) {
+func Send(w http.ResponseWriter, flusher http.Flusher, eventType string, data any) {
 	b, err := json.Marshal(data)
 	if err != nil {
 		return
@@ -16,14 +16,13 @@ func Send(w http.ResponseWriter, flusher http.Flusher, eventType string, data in
 }
 
 func WriteError(w http.ResponseWriter, status int, msg string) {
-	resp := map[string]interface{}{
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]any{
 		"type": "error",
-		"error": map[string]interface{}{
+		"error": map[string]any{
 			"type":    "api_error",
 			"message": msg,
 		},
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(resp)
+	})
 }

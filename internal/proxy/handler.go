@@ -3,16 +3,25 @@ package proxy
 import (
 	"encoding/json"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"opencode-proxy/internal/anthropic"
-	"opencode-proxy/internal/config"
+	"opencode-proxy/internal/middleware"
 	"opencode-proxy/internal/provider"
 	"opencode-proxy/internal/sse"
 )
 
-func HandleMessages(w http.ResponseWriter, r *http.Request) {
+type Handler struct {
+	registry *provider.Registry
+	logger   *slog.Logger
+}
+
+func NewHandler(registry *provider.Registry, logger *slog.Logger) *Handler {
+	return &Handler{registry: registry, logger: logger}
+}
+
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -30,39 +39,38 @@ func HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Header'dan gelen key'i yoksay — config.json'daki key'leri kullan
-	providers := provider.Ordered()
-	lastErr := ""
+	reqID := middleware.GetRequestID(r.Context())
+	providers := h.registry.Ordered()
+	var lastErr error
 
 	for _, p := range providers {
-		log.Printf("dene: %s (type=%s, priority=%d)", p.Name, p.Type, p.Priority)
+		h.logger.Debug("sağlayıcı deneniyor",
+			slog.String("provider", p.Name()),
+			slog.String("request_id", reqID),
+		)
 
-		switch p.Type {
-		case provider.Anthropic:
-			cfg := config.Provider{
-				Name: p.Name, Type: string(p.Type),
-				BaseURL: p.BaseURL, APIKey: p.APIKey, Priority: p.Priority,
-			}
-			ok, errStr := tryAnthropicPassthrough(w, r, body, cfg, antReq)
-			if ok {
-				return
-			}
-			lastErr = errStr
-			log.Printf("[FAIL] %s başarısız: %s → sonrakine geçiliyor", p.Name, errStr)
-
-		case provider.OpenAI:
-			cfg := config.Provider{
-				Name: p.Name, Type: string(p.Type),
-				BaseURL: p.BaseURL, APIKey: p.APIKey, Priority: p.Priority,
-			}
-			ok, errStr := tryOpenAIProxy(w, r, cfg, antReq)
-			if ok {
-				return
-			}
-			lastErr = errStr
-			log.Printf("[FAIL] %s başarısız: %s → sonrakine geçiliyor", p.Name, errStr)
+		if err := p.Proxy(r.Context(), w, body, antReq); err != nil {
+			lastErr = err
+			h.logger.Warn("sağlayıcı başarısız, sonrakine geçiliyor",
+				slog.String("provider", p.Name()),
+				slog.String("error", err.Error()),
+				slog.String("request_id", reqID),
+			)
+			continue
 		}
+		return
 	}
 
-	sse.WriteError(w, http.StatusBadGateway, "tüm sağlayıcılar başarısız oldu: "+lastErr)
+	if lastErr != nil {
+		h.logger.Error("tüm sağlayıcılar başarısız",
+			slog.String("last_error", lastErr.Error()),
+			slog.String("request_id", reqID),
+		)
+		sse.WriteError(w, http.StatusBadGateway, "tüm sağlayıcılar başarısız oldu: "+lastErr.Error())
+	} else {
+		h.logger.Error("sağlayıcı yok",
+			slog.String("request_id", reqID),
+		)
+		sse.WriteError(w, http.StatusBadGateway, "yapılandırılmış sağlayıcı yok")
+	}
 }

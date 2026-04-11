@@ -1,8 +1,8 @@
 # Anthropic Proxy
 
-Anthropic Messages API protokolünü destekleyen istemcileri (Claude Code, Cursor vb.) birden fazla LLM sağlayıcısına bağlayan gösterge panosu ters vekil (reverse proxy). z.ai öncelikli çalışır, limit dolduğunda OpenCode Go'ya otomatik geçiş yapar.
+Anthropic Messages API protokolünü destekleyen istemcileri (Claude Code, Cursor vb.) birden fazla LLM sağlayıcısına bağlayan reverse proxy. z.ai öncelikli çalışır, limit dolduğunda OpenCode Go'ya otomatik geçiş yapar.
 
-## Ne Yapar?
+## Mimari
 
 ```
 Claude Code ──► localhost:8787 ──► z.ai (Anthropic passthrough)
@@ -14,6 +14,10 @@ Claude Code ──► localhost:8787 ──► z.ai (Anthropic passthrough)
 - **OpenCode Go** Anthropic→OpenAI format çevirisi ile çalışır
 - Öncelik sırasına göre dener, başarısız olursa otomatik sonrakine geçer
 - `config.json` dosyasından sıcak yeniden yükleme (restart gerektirmez)
+- Graceful shutdown (SIGTERM/SIGINT)
+- Structured logging (`slog`)
+- Request ID tracing
+- Panic recovery middleware
 
 ## Hızlı Başlangıç
 
@@ -27,10 +31,13 @@ cp config.example.json config.json
 # config.json'ı düzenle, API anahtarlarını gir
 
 # 3. Derle ve çalıştır
-go build -o opencode-proxy .
+make build
 ./opencode-proxy
 
-# 4. Claude Code settings.json'ı güncelle
+# 4. Testleri çalıştır
+make test
+
+# 5. Claude Code settings.json'ı güncelle
 ```
 
 Claude Code `settings.json`:
@@ -47,7 +54,7 @@ Claude Code `settings.json`:
 }
 ```
 
-`ANTHROPIC_API_KEY` değeri önemli değil — proxy kendi `config.json`'ındaki anahtarları kullanır. Claude Code sadece bir değer olmasını bekliyor.
+`ANTHROPIC_API_KEY` değeri önemli değil — proxy kendi `config.json`'ındaki anahtarları kullanır.
 
 ## Yapılandırma
 
@@ -85,22 +92,87 @@ Claude Code `settings.json`:
 
 ### Sıcak Yeniden Yükleme
 
-`config.json` değiştirildiğinde proxy otomatik olarak yeniden yükler. Restart gerekmez.
+`config.json` değiştirildiğinde proxy otomatik olarak yeniden yükler. Restart gerekmez. Sağlayıcı ekle/çıkar, öncelik değiştir — hepsi canlı güncellenir.
+
+## Web Araçları
+
+Proxy, dahili web araçları sunar. İnternet araştırması için kullanılabilir.
+
+### Web Fetch
+
+Bir URL'nin içeriğini çeker ve metin olarak döner.
 
 ```bash
-# Sağlayıcı ekle/çıkar, priority değiştir — hepsi canlı
+# GET ile
+curl "http://localhost:8787/v1/tools/web_fetch?url=https://example.com"
+
+# POST ile
+curl -X POST http://localhost:8787/v1/tools/web_fetch \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com"}'
 ```
 
-## Desteklenen Özellikler
+Yanıt:
 
-- Streaming (SSE) — tool kullanımı dahil
-- Tool calling (function calling)
-- Sistem mesajları
-- Çoklu sağlayıcı failover
-- Öncelik tabanlı yönlendirme
-- Sıcak yapılandırma yeniden yükleme
-- Anthropic passthrough (sıfır ek yük)
-- OpenAI format çevirisi
+```json
+{
+  "url": "https://example.com",
+  "title": "Example Domain",
+  "content": "This domain is for use in illustrative examples..."
+}
+```
+
+### Web Search
+
+DuckDuckGo üzerinden web araması yapar.
+
+```bash
+# GET ile
+curl "http://localhost:8787/v1/tools/web_search?q=go+programming"
+
+# POST ile
+curl -X POST http://localhost:8787/v1/tools/web_search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "go programming best practices"}'
+```
+
+Yanıt:
+
+```json
+{
+  "query": "go programming",
+  "results": [
+    {"title": "Go Programming Language", "url": "https://go.dev/", "snippet": ""},
+    {"title": "A Tour of Go", "url": "https://go.dev/tour/", "snippet": ""}
+  ]
+}
+```
+
+## MCP Server
+
+Proxy, Claude Code ile stdio üzerinden entegre çalışan bir MCP (Model Context Protocol) sunucusu da içerir. Claude Code'un yerleşik web araçlarını kullanamadığınız durumlarda `web_search` ve `web_fetch` araçlarını MCP üzerinden sağlar.
+
+### Claude Code Yapılandırması
+
+`~/.claude/settings.json` dosyasına MCP server olarak ekleyin:
+
+```json
+{
+  "mcpServers": {
+    "opencode-proxy": {
+      "command": "/tam/yol/opencode-proxy",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Kullanılabilir Araçlar
+
+| Araç | Açıklama |
+|------|-----------|
+| `web_search` | DuckDuckGo üzerinden web araması |
+| `web_fetch` | URL içeriğini çeker ve metin olarak döner |
 
 ## Sağlayıcı Failover Davranışı
 
@@ -134,22 +206,45 @@ curl http://localhost:8787/health
 
 ```
 opencode-proxy/
-├── main.go                         # Giriş noktası
-├── config.json                     # Yapılandırma (.gitignore)
-├── config.example.json             # Şablon yapılandırma
+├── main.go                              # Giriş noktası, graceful shutdown, DI
+├── config.json                          # Yapılandırma (.gitignore)
+├── config.example.json                  # Şablon yapılandırma
 ├── internal/
-│   ├── config/config.go            # Yapılandırma yükleme + sıcak yeniden yükleme
-│   ├── provider/provider.go        # Sağlayıcı sıralama
-│   ├── anthropic/types.go          # Anthropic tipleri
-│   ├── openai/types.go             # OpenAI tipleri
-│   ├── convert/convert.go          # Anthropic → OpenAI dönüşüm
+│   ├── config/config.go                 # Config yükleme, doğrulama, sıcak yeniden yükleme
+│   ├── middleware/
+│   │   ├── chain.go                     # Middleware zinciri
+│   │   ├── logging.go                   # Structured request logging (slog)
+│   │   ├── requestid.go                 # İstek ID üretimi (crypto/rand)
+│   │   └── recovery.go                  # Panic kurtarma
+│   ├── provider/
+│   │   ├── provider.go                  # Provider interface, ProxyError, Registry
+│   │   ├── anthropic.go                 # Anthropic passthrough implementasyonu
+│   │   └── openai.go                    # OpenAI proxy + streaming implementasyonu
 │   ├── proxy/
-│   │   ├── handler.go              # Ana HTTP işleyici + failover mantığı
-│   │   ├── anthropic.go            # Anthropic passthrough
-│   │   ├── openai.go               # OpenAI format çevirisi
-│   │   └── health.go               # Sağlık kontrolü
-│   └── sse/sse.go                  # SSE yardımcıları
+│   │   ├── handler.go                   # HTTP handler + failover mantığı
+│   │   └── health.go                    # Sağlık kontrolü endpoint'i
+│   ├── convert/convert.go              # Anthropic → OpenAI dönüşüm
+│   ├── anthropic/types.go              # Anthropic API tipleri
+│   ├── openai/types.go                 # OpenAI API tipleri
+│   ├── sse/sse.go                      # SSE yardımcıları
+│   └── webtools/
+│       ├── fetch.go                     # Web sayfası çekme
+│       └── search.go                    # Web arama (DuckDuckGo)
+│   └── mcp/
+│       ├── server.go                    # MCP stdio server (JSON-RPC)
+│       └── types.go                     # MCP protokol tipleri
 ```
+
+## Make Komutları
+
+| Komut | Açıklama |
+|-------|-----------|
+| `make build` | Derle |
+| `make run` | Çalıştır |
+| `make test` | Testleri çalıştır (race detector dahil) |
+| `make vet` | Statik analiz |
+| `make lint` | vet + test |
+| `make clean` | Derleme çıktısını temizle |
 
 ## Lisans
 

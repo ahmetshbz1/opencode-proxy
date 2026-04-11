@@ -1,73 +1,104 @@
-package proxy
+package provider
 
 import (
 	"bufio"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"opencode-proxy/internal/anthropic"
 	"opencode-proxy/internal/config"
 	"opencode-proxy/internal/convert"
+	"opencode-proxy/internal/middleware"
 	"opencode-proxy/internal/openai"
 	"opencode-proxy/internal/sse"
 )
 
-// tryOpenAIProxy, Anthropic isteğini OpenAI formatına çevirip ileten sağlayıcıdır.
-func tryOpenAIProxy(w http.ResponseWriter, r *http.Request, p config.Provider, antReq anthropic.Request) (bool, string) {
+type OpenAIProvider struct {
+	name     string
+	priority int
+	baseURL  string
+	apiKey   string
+	client   *http.Client
+	logger   *slog.Logger
+}
+
+func NewOpenAI(cfg config.Provider, client *http.Client, logger *slog.Logger) *OpenAIProvider {
+	return &OpenAIProvider{
+		name:     cfg.Name,
+		priority: cfg.Priority,
+		baseURL:  cfg.BaseURL,
+		apiKey:   cfg.APIKey,
+		client:   client,
+		logger:   logger,
+	}
+}
+
+func (p *OpenAIProvider) Name() string  { return p.name }
+func (p *OpenAIProvider) Priority() int { return p.priority }
+
+func (p *OpenAIProvider) Proxy(ctx context.Context, w http.ResponseWriter, _ []byte, antReq anthropic.Request) error {
+	reqID := middleware.GetRequestID(ctx)
+
 	oaiReq := convert.ToOpenAI(antReq)
 	oaiBody, err := json.Marshal(oaiReq)
 	if err != nil {
-		return false, err.Error()
+		return &ProxyError{ProviderName: p.name, Message: err.Error(), Retryable: false}
 	}
 
-	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.BaseURL, strings.NewReader(string(oaiBody)))
+	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL, strings.NewReader(string(oaiBody)))
 	if err != nil {
-		return false, err.Error()
+		return &ProxyError{ProviderName: p.name, Message: err.Error(), Retryable: true}
 	}
 	proxyReq.Header.Set("Content-Type", "application/json")
-	proxyReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+	proxyReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	client := &http.Client{Timeout: 300 * time.Second}
-	resp, err := client.Do(proxyReq)
+	p.logger.Debug("openai istek gönderiliyor",
+		slog.String("provider", p.name),
+		slog.String("request_id", reqID),
+	)
+
+	resp, err := p.client.Do(proxyReq)
 	if err != nil {
-		return false, err.Error()
+		return &ProxyError{ProviderName: p.name, Message: err.Error(), Retryable: true}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		errMsg := fmtError(resp)
-		log.Printf("[FAIL] %s başarısız: %s → sonrakine geçiliyor", p.Name, errMsg)
-
-		if resp.StatusCode == http.StatusTooManyRequests ||
-			resp.StatusCode == http.StatusUnauthorized ||
-			resp.StatusCode == http.StatusForbidden ||
-			resp.StatusCode == http.StatusPaymentRequired {
-			return false, errMsg
+		respBody, _ := io.ReadAll(resp.Body)
+		p.logger.Warn("openai sağlayıcı başarısız",
+			slog.String("provider", p.name),
+			slog.Int("status", resp.StatusCode),
+			slog.String("body", string(respBody)),
+			slog.String("request_id", reqID),
+		)
+		return &ProxyError{
+			ProviderName: p.name,
+			StatusCode:   resp.StatusCode,
+			Message:      string(respBody),
+			Retryable:    isRetryable(resp.StatusCode),
 		}
-		return false, errMsg
 	}
 
-	log.Printf("[OK] %s başarılı (openai proxy)", p.Name)
+	p.logger.Info("openai proxy başarılı",
+		slog.String("provider", p.name),
+		slog.String("request_id", reqID),
+	)
 
 	if antReq.Stream {
-		streamResponse(w, resp, antReq.Model)
+		p.streamResponse(w, resp, antReq.Model)
 	} else {
-		nonStreamResponse(w, resp, antReq.Model)
+		p.nonStreamResponse(w, resp, antReq.Model)
 	}
-	return true, ""
+	return nil
 }
 
-func fmtError(resp *http.Response) string {
-	body, _ := io.ReadAll(resp.Body)
-	return fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body))
-}
-
-func nonStreamResponse(w http.ResponseWriter, resp *http.Response, model string) {
+func (p *OpenAIProvider) nonStreamResponse(w http.ResponseWriter, resp *http.Response, model string) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		sse.WriteError(w, http.StatusInternalServerError, "yanıt okunamadı: "+err.Error())
@@ -80,7 +111,7 @@ func nonStreamResponse(w http.ResponseWriter, resp *http.Response, model string)
 		return
 	}
 
-	var content []interface{}
+	var content []any
 	stopReason := "end_turn"
 
 	if len(oaiResp.Choices) > 0 {
@@ -110,7 +141,7 @@ func nonStreamResponse(w http.ResponseWriter, resp *http.Response, model string)
 		content = append(content, anthropic.TextBlock{Type: "text", Text: ""})
 	}
 
-	respBody, _ := json.Marshal(map[string]interface{}{
+	respBody, _ := json.Marshal(map[string]any{
 		"id":            "msg-" + oaiResp.ID,
 		"type":          "message",
 		"role":          "assistant",
@@ -118,7 +149,7 @@ func nonStreamResponse(w http.ResponseWriter, resp *http.Response, model string)
 		"model":         model,
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
-		"usage": map[string]interface{}{
+		"usage": map[string]any{
 			"input_tokens":  oaiResp.Usage.PromptTokens,
 			"output_tokens": oaiResp.Usage.CompletionTokens,
 		},
@@ -128,7 +159,7 @@ func nonStreamResponse(w http.ResponseWriter, resp *http.Response, model string)
 	w.Write(respBody)
 }
 
-func streamResponse(w http.ResponseWriter, resp *http.Response, model string) {
+func (p *OpenAIProvider) streamResponse(w http.ResponseWriter, resp *http.Response, model string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		sse.WriteError(w, http.StatusInternalServerError, "streaming desteklenmiyor")
@@ -140,23 +171,23 @@ func streamResponse(w http.ResponseWriter, resp *http.Response, model string) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("anthropic-version", "2023-06-01")
 
-	msgID := "msg-proxy-" + genID()
+	msgID := "msg-proxy-" + genMessageID()
 
-	sse.Send(w, flusher, "message_start", map[string]interface{}{
+	sse.Send(w, flusher, "message_start", map[string]any{
 		"type": "message_start",
-		"message": map[string]interface{}{
+		"message": map[string]any{
 			"id": msgID, "type": "message", "role": "assistant",
-			"content": []interface{}{}, "model": model,
+			"content": []any{}, "model": model,
 			"stop_reason": nil, "stop_sequence": nil,
-			"usage": map[string]interface{}{"input_tokens": 0, "output_tokens": 0},
+			"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
 		},
 	})
 
 	textBlockIdx := 0
-	sse.Send(w, flusher, "content_block_start", map[string]interface{}{
+	sse.Send(w, flusher, "content_block_start", map[string]any{
 		"type":          "content_block_start",
 		"index":         textBlockIdx,
-		"content_block": map[string]interface{}{"type": "text", "text": ""},
+		"content_block": map[string]any{"type": "text", "text": ""},
 	})
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -195,34 +226,34 @@ func streamResponse(w http.ResponseWriter, resp *http.Response, model string) {
 
 		if choice.Delta.Content != "" {
 			outputTokens++
-			sse.Send(w, flusher, "content_block_delta", map[string]interface{}{
+			sse.Send(w, flusher, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
 				"index": textBlockIdx,
-				"delta": map[string]interface{}{"type": "text_delta", "text": choice.Delta.Content},
+				"delta": map[string]any{"type": "text_delta", "text": choice.Delta.Content},
 			})
 		}
 
 		if choice.FinishReason != nil {
-			sse.Send(w, flusher, "content_block_stop", map[string]interface{}{
+			sse.Send(w, flusher, "content_block_stop", map[string]any{
 				"type": "content_block_stop", "index": textBlockIdx,
 			})
 
-			for i := 0; i < len(pending); i++ {
+			for i := range len(pending) {
 				tc := pending[i]
 				args := tc.Arguments
 				if args == "" {
 					args = "{}"
 				}
 				idx := textBlockIdx + 1 + i
-				sse.Send(w, flusher, "content_block_start", map[string]interface{}{
+				sse.Send(w, flusher, "content_block_start", map[string]any{
 					"type":  "content_block_start",
 					"index": idx,
-					"content_block": map[string]interface{}{
+					"content_block": map[string]any{
 						"type": "tool_use", "id": tc.ID, "name": tc.Name,
 						"input": json.RawMessage(args),
 					},
 				})
-				sse.Send(w, flusher, "content_block_stop", map[string]interface{}{
+				sse.Send(w, flusher, "content_block_stop", map[string]any{
 					"type": "content_block_stop", "index": idx,
 				})
 			}
@@ -234,21 +265,18 @@ func streamResponse(w http.ResponseWriter, resp *http.Response, model string) {
 				stopReason = "max_tokens"
 			}
 
-			sse.Send(w, flusher, "message_delta", map[string]interface{}{
+			sse.Send(w, flusher, "message_delta", map[string]any{
 				"type":  "message_delta",
-				"delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil},
-				"usage": map[string]interface{}{"output_tokens": outputTokens},
+				"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
+				"usage": map[string]any{"output_tokens": outputTokens},
 			})
-			sse.Send(w, flusher, "message_stop", map[string]interface{}{"type": "message_stop"})
+			sse.Send(w, flusher, "message_stop", map[string]any{"type": "message_stop"})
 		}
 	}
 }
 
-func genID() string {
-	b := make([]byte, 12)
-	for i := range b {
-		b[i] = "abcdefghijklmnopqrstuvwxyz0123456789"[time.Now().UnixNano()%36]
-		time.Sleep(time.Nanosecond)
-	}
-	return string(b)
+func genMessageID() string {
+	var buf [8]byte
+	_, _ = rand.Read(buf[:])
+	return hex.EncodeToString(buf[:])
 }
