@@ -21,7 +21,7 @@ func TestHandleInitialize(t *testing.T) {
 	srv := NewServer(nil, nil, newTestLogger())
 
 	var buf bytes.Buffer
-	srv.enc = json.NewEncoder(&buf)
+	srv.w = &buf
 	srv.handleRequest(JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      1,
@@ -50,7 +50,7 @@ func TestHandleToolsList(t *testing.T) {
 	srv := NewServer(nil, nil, newTestLogger())
 
 	var buf bytes.Buffer
-	srv.enc = json.NewEncoder(&buf)
+	srv.w = &buf
 	srv.handleRequest(JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      2,
@@ -88,7 +88,7 @@ func TestHandleToolsCallWebSearchEmptyQuery(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	srv.enc = json.NewEncoder(&buf)
+	srv.w = &buf
 	srv.handleRequest(JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      3,
@@ -121,7 +121,7 @@ func TestHandleToolsCallWebFetch(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	srv.enc = json.NewEncoder(&buf)
+	srv.w = &buf
 	srv.handleRequest(JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      4,
@@ -155,7 +155,7 @@ func TestHandleToolsCallUnknownTool(t *testing.T) {
 	params, _ := json.Marshal(ToolCallParams{Name: "unknown_tool"})
 
 	var buf bytes.Buffer
-	srv.enc = json.NewEncoder(&buf)
+	srv.w = &buf
 	srv.handleRequest(JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      5,
@@ -177,7 +177,7 @@ func TestHandleUnknownMethod(t *testing.T) {
 	srv := NewServer(nil, nil, newTestLogger())
 
 	var buf bytes.Buffer
-	srv.enc = json.NewEncoder(&buf)
+	srv.w = &buf
 	srv.handleRequest(JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      6,

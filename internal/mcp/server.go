@@ -16,17 +16,16 @@ type Server struct {
 	fetcher  *webtools.Fetcher
 	searcher *webtools.Searcher
 	logger   *slog.Logger
-	enc      *json.Encoder
+	w        io.Writer
 	mu       sync.Mutex
 }
 
 func NewServer(fetcher *webtools.Fetcher, searcher *webtools.Searcher, logger *slog.Logger) *Server {
-	enc := json.NewEncoder(os.Stdout)
 	return &Server{
 		fetcher:  fetcher,
 		searcher: searcher,
 		logger:   logger,
-		enc:      enc,
+		w:        os.Stdout,
 	}
 }
 
@@ -40,14 +39,23 @@ func (s *Server) Run() error {
 			}
 			return fmt.Errorf("JSON decode hatası: %w", err)
 		}
-		go s.handleRequest(req)
+		s.handleRequest(req)
 	}
 }
 
 func (s *Server) send(resp JSONRPCResponse) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.enc.Encode(resp)
+	data, err := json.Marshal(resp)
+	if err != nil {
+		s.logger.Error("JSON marshal hatası", slog.String("error", err.Error()))
+		return
+	}
+	s.w.Write(data)
+	s.w.Write([]byte{'\n'})
+	if f, ok := s.w.(interface{ Sync() error }); ok {
+		f.Sync()
+	}
 }
 
 func (s *Server) handleRequest(req JSONRPCRequest) {
