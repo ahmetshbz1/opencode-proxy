@@ -21,6 +21,12 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+func (rw *responseWriter) Flush() {
+	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 // Logging, slog ile her isteği loglar.
 func Logging(logger *slog.Logger) Middleware {
 	return func(next http.Handler) http.Handler {

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,10 +33,16 @@ type Provider interface {
 }
 
 type Registry struct {
-	mu        sync.RWMutex
-	providers []Provider
-	client    *http.Client
-	logger    *slog.Logger
+	mu           sync.RWMutex
+	providers    []providerEntry
+	client       *http.Client
+	logger       *slog.Logger
+	persistOAuth func(name string, oauth config.OAuthConfig) error
+}
+
+type providerEntry struct {
+	provider Provider
+	models   []string
 }
 
 func NewRegistry(client *http.Client, logger *slog.Logger) *Registry {
@@ -48,26 +56,94 @@ func (r *Registry) RebuildFromConfig(cfgs []config.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.providers = make([]Provider, 0, len(cfgs))
+	r.providers = make([]providerEntry, 0, len(cfgs))
 	for _, c := range cfgs {
+		var built Provider
 		switch c.Type {
 		case "anthropic":
-			r.providers = append(r.providers, NewAnthropic(c, r.client, r.logger))
+			built = NewAnthropic(c, r.client, r.logger)
 		case "openai":
-			r.providers = append(r.providers, NewOpenAI(c, r.client, r.logger))
+			built = NewOpenAI(c, r.client, r.logger)
+		case "codex":
+			if r.persistOAuth != nil {
+				providerName := c.Name
+				c.PersistOAuth = func(oauth config.OAuthConfig) error {
+					return r.persistOAuth(providerName, oauth)
+				}
+			}
+			built = NewCodex(c, r.client, r.logger)
+		}
+		if built != nil {
+			r.providers = append(r.providers, providerEntry{
+				provider: built,
+				models:   c.Models,
+			})
 		}
 	}
-	slices.SortFunc(r.providers, func(a, b Provider) int {
-		return a.Priority() - b.Priority()
+	slices.SortFunc(r.providers, func(a, b providerEntry) int {
+		return a.provider.Priority() - b.provider.Priority()
 	})
 }
 
 func (r *Registry) Ordered() []Provider {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]Provider, len(r.providers))
-	copy(out, r.providers)
+	out := make([]Provider, 0, len(r.providers))
+	for _, entry := range r.providers {
+		out = append(out, entry.provider)
+	}
 	return out
+}
+
+func (r *Registry) OrderedForModel(model string) []Provider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	trimmedModel := strings.TrimSpace(model)
+	explicit := make([]Provider, 0, len(r.providers))
+	catchAll := make([]Provider, 0, len(r.providers))
+	for _, entry := range r.providers {
+		if entry.isCatchAll() {
+			catchAll = append(catchAll, entry.provider)
+			continue
+		}
+		if entry.matchesModel(trimmedModel) {
+			explicit = append(explicit, entry.provider)
+		}
+	}
+	if len(explicit) > 0 {
+		return append(explicit, catchAll...)
+	}
+	return catchAll
+}
+
+func (r *Registry) SetOAuthPersister(fn func(name string, oauth config.OAuthConfig) error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.persistOAuth = fn
+}
+
+func (e providerEntry) matchesModel(model string) bool {
+	if len(e.models) == 0 || model == "" {
+		return true
+	}
+	for _, pattern := range e.models {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if ok, err := path.Match(pattern, model); err == nil && ok {
+			return true
+		}
+		if pattern == model {
+			return true
+		}
+	}
+	return false
+}
+
+func (e providerEntry) isCatchAll() bool {
+	return len(e.models) == 0
 }
 
 func DefaultHTTPClient() *http.Client {

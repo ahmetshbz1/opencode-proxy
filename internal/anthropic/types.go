@@ -1,6 +1,10 @@
 package anthropic
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+)
 
 type Request struct {
 	Model         string          `json:"model"`
@@ -39,10 +43,35 @@ type ToolUseBlock struct {
 }
 
 type ToolResultBlock struct {
-	Type      string `json:"type"`
-	ToolUseID string `json:"tool_use_id"`
-	Content   string `json:"content"`
-	IsError   bool   `json:"is_error,omitempty"`
+	Type      string          `json:"type"`
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error,omitempty"`
+}
+
+func (b ToolResultBlock) ContentText() string {
+	if len(b.Content) == 0 {
+		return ""
+	}
+
+	var plain string
+	if err := json.Unmarshal(b.Content, &plain); err == nil {
+		return plain
+	}
+
+	var blocks []TextBlock
+	if err := json.Unmarshal(b.Content, &blocks); err == nil {
+		parts := make([]string, 0, len(blocks))
+		for _, block := range blocks {
+			text := strings.TrimSpace(block.Text)
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+
+	return string(bytes.TrimSpace(b.Content))
 }
 
 type ErrorResponse struct {

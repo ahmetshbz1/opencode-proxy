@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"opencode-proxy/internal/auth"
 	"opencode-proxy/internal/config"
 	"opencode-proxy/internal/mcp"
 	"opencode-proxy/internal/middleware"
@@ -19,27 +21,81 @@ import (
 	"opencode-proxy/internal/webtools"
 )
 
-func main() {
-	if len(os.Args) > 1 && os.Args[1] == "mcp" {
-		runMCP()
-		return
+var runAuthCommand = func(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("auth", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	configPath := fs.String("config", "config.json", "yapılandırma dosyası yolu")
+	name := fs.String("name", "codex-oauth", "sağlayıcı adı")
+	baseURL := fs.String("base-url", "https://chatgpt.com/backend-api/codex", "Codex base URL")
+	noBrowser := fs.Bool("no-browser", false, "tarayıcı açma")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
 
-	configFile := flag.String("config", "config.json", "yapılandırma dosyası yolu")
-	flag.Parse()
+	return auth.RunCodexAuth(ctx, auth.CodexAuthOptions{
+		ConfigPath: *configPath,
+		Name:       *name,
+		BaseURL:    *baseURL,
+		NoBrowser:  *noBrowser,
+		HTTPClient: provider.DefaultHTTPClient(),
+		Stdout:     os.Stdout,
+	})
+}
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+func main() {
+	os.Exit(run(context.Background(), os.Args, os.Stdout, os.Stderr))
+}
+
+func runMCP() {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 
-	mgr, err := config.NewManager(*configFile, logger)
+	fetcher := webtools.NewFetcher(logger)
+	searcher := webtools.NewSearcher(logger)
+
+	srv := mcp.NewServer(fetcher, searcher, logger)
+	if err := srv.Run(); err != nil {
+		logger.Error("MCP server hatası", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 1 {
+		switch args[1] {
+		case "mcp":
+			runMCP()
+			return 0
+		case "auth":
+			if err := runAuthCommand(ctx, args[2:]); err != nil {
+				fmt.Fprintln(stderr, err.Error())
+				return 1
+			}
+			return 0
+		}
+	}
+
+	configFile, err := parseRunFlags(args)
+	if err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return 1
+	}
+
+	logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	mgr, err := config.NewManager(configFile, logger)
 	if err != nil {
 		logger.Error("config yüklenemedi", slog.String("error", err.Error()))
-		os.Exit(1)
+		return 1
 	}
 
 	httpClient := provider.DefaultHTTPClient()
 	registry := provider.NewRegistry(httpClient, logger)
+	registry.SetOAuthPersister(mgr.UpdateProviderOAuth)
 	registry.RebuildFromConfig(mgr.Get().Providers)
 
 	mgr.OnChange(func(cfg *config.Config) {
@@ -97,36 +153,31 @@ func main() {
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("sunucu hatası", slog.String("error", err.Error()))
-			os.Exit(1)
 		}
 	}()
 
 	<-done
 	logger.Info("kapatma sinyali alındı, düzgün kapatma başlatılıyor...")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	mgr.Close()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("düzgün kapatma başarısız", slog.String("error", err.Error()))
-		os.Exit(1)
+		return 1
 	}
 
 	logger.Info("sunucu düzgün şekilde kapatıldı")
+	return 0
 }
 
-func runMCP() {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
-
-	fetcher := webtools.NewFetcher(logger)
-	searcher := webtools.NewSearcher(logger)
-
-	srv := mcp.NewServer(fetcher, searcher, logger)
-	if err := srv.Run(); err != nil {
-		logger.Error("MCP server hatası", slog.String("error", err.Error()))
-		os.Exit(1)
+func parseRunFlags(args []string) (string, error) {
+	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", "config.json", "yapılandırma dosyası yolu")
+	if err := fs.Parse(args[1:]); err != nil {
+		return "", err
 	}
+	return *configPath, nil
 }

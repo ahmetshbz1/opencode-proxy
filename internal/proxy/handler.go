@@ -40,7 +40,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reqID := middleware.GetRequestID(r.Context())
-	providers := h.registry.Ordered()
+	providers := h.registry.OrderedForModel(antReq.Model)
 	var lastErr error
 
 	for _, p := range providers {

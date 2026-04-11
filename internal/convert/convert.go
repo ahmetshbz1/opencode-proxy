@@ -106,9 +106,10 @@ func convertMessage(msg anthropic.Message) []openai.Message {
 	if len(toolResults) > 0 {
 		var msgs []openai.Message
 		for _, tr := range toolResults {
+			content := tr.ContentText()
 			msgs = append(msgs, openai.Message{
 				Role:       "tool",
-				Content:    &tr.Content,
+				Content:    &content,
 				ToolCallID: tr.ToolUseID,
 			})
 		}

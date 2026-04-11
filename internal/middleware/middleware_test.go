@@ -9,6 +9,16 @@ import (
 	"testing"
 )
 
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+	flushed bool
+}
+
+func (f *flushRecorder) Flush() {
+	f.flushed = true
+	f.ResponseRecorder.Flush()
+}
+
 func TestChain(t *testing.T) {
 	order := []string{}
 
@@ -104,6 +114,27 @@ func TestLogging(t *testing.T) {
 	}
 	if w.Code != http.StatusCreated {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusCreated)
+	}
+}
+
+func TestLoggingPreservesFlusher(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("wrapped writer http.Flusher değil")
+		}
+		flusher.Flush()
+	})
+
+	handler := Logging(logger)(next)
+
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil)
+	w := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(w, req)
+
+	if !w.flushed {
+		t.Fatal("flush çağrılmadı")
 	}
 }
 

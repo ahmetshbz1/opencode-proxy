@@ -84,6 +84,21 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "codex oauth refresh token ile geçerli",
+			modify: func(c *Config) {
+				c.Providers[0] = Provider{
+					Name:     "codex",
+					Type:     "codex",
+					BaseURL:  "https://chatgpt.com/backend-api/codex",
+					Priority: 1,
+					OAuth: &OAuthConfig{
+						RefreshToken: "refresh-token",
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
 			name:    "boş isim",
 			modify:  func(c *Config) { c.Providers[0].Name = "" },
 			wantErr: true,
@@ -138,5 +153,69 @@ func TestManagerGet(t *testing.T) {
 	got := mgr.Get()
 	if got.Port != 8787 {
 		t.Errorf("Get().Port = %d, want 8787", got.Port)
+	}
+}
+
+func TestUpsertProviderReplacesByName(t *testing.T) {
+	cfg := &Config{
+		Port: 8787,
+		Providers: []Provider{
+			{Name: "codex-oauth", Type: "codex", BaseURL: "https://old.example.com", OAuth: &OAuthConfig{RefreshToken: "old"}, Priority: 2},
+		},
+	}
+
+	cfg.UpsertProvider(Provider{
+		Name:     "codex-oauth",
+		Type:     "codex",
+		BaseURL:  "https://new.example.com",
+		OAuth:    &OAuthConfig{RefreshToken: "new"},
+		Priority: 2,
+	})
+
+	if len(cfg.Providers) != 1 {
+		t.Fatalf("providers = %d, want 1", len(cfg.Providers))
+	}
+	if cfg.Providers[0].BaseURL != "https://new.example.com" {
+		t.Fatalf("base_url = %q, want https://new.example.com", cfg.Providers[0].BaseURL)
+	}
+	if cfg.Providers[0].OAuth == nil || cfg.Providers[0].OAuth.RefreshToken != "new" {
+		t.Fatalf("oauth.refresh_token = %v, want new", cfg.Providers[0].OAuth)
+	}
+}
+
+func TestManagerUpdateProviderOAuthPersistsTokens(t *testing.T) {
+	cfg := &Config{
+		Port: 8787,
+		Providers: []Provider{
+			{Name: "codex-oauth", Type: "codex", BaseURL: "https://chatgpt.com/backend-api/codex", Priority: 1, OAuth: &OAuthConfig{RefreshToken: "old"}},
+		},
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	data, _ := json.Marshal(cfg)
+	os.WriteFile(path, data, 0644)
+
+	mgr, err := NewManager(path, nil)
+	if err != nil {
+		t.Fatalf("NewManager hatası: %v", err)
+	}
+	defer mgr.Close()
+
+	err = mgr.UpdateProviderOAuth("codex-oauth", OAuthConfig{
+		AccessToken:  "new-access",
+		RefreshToken: "new-refresh",
+		ExpiresAt:    "2026-04-11T12:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("UpdateProviderOAuth hatası: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load hatası: %v", err)
+	}
+	got := loaded.Providers[0].OAuth
+	if got == nil || got.RefreshToken != "new-refresh" || got.AccessToken != "new-access" {
+		t.Fatalf("persisted oauth = %+v", got)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -15,11 +16,23 @@ type Config struct {
 }
 
 type Provider struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	BaseURL  string `json:"base_url"`
-	APIKey   string `json:"api_key"`
-	Priority int    `json:"priority"`
+	Name         string                  `json:"name"`
+	Type         string                  `json:"type"`
+	BaseURL      string                  `json:"base_url"`
+	APIKey       string                  `json:"api_key"`
+	OAuth        *OAuthConfig            `json:"oauth,omitempty"`
+	Models       []string                `json:"models,omitempty"`
+	Priority     int                     `json:"priority"`
+	PersistOAuth func(OAuthConfig) error `json:"-"`
+}
+
+type OAuthConfig struct {
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	IDToken      string `json:"id_token,omitempty"`
+	AccountID    string `json:"account_id,omitempty"`
+	Email        string `json:"email,omitempty"`
+	ExpiresAt    string `json:"expires_at,omitempty"`
 }
 
 func (c *Config) Validate() error {
@@ -33,17 +46,34 @@ func (c *Config) Validate() error {
 		if p.Name == "" {
 			return fmt.Errorf("sağlayıcı %d: isim boş olamaz", i)
 		}
-		if p.Type != "anthropic" && p.Type != "openai" {
+		if p.Type != "anthropic" && p.Type != "openai" && p.Type != "codex" {
 			return fmt.Errorf("sağlayıcı %d (%s): bilinmeyen tip %q", i, p.Name, p.Type)
 		}
 		if p.BaseURL == "" {
 			return fmt.Errorf("sağlayıcı %d (%s): base_url boş olamaz", i, p.Name)
 		}
-		if p.APIKey == "" {
+		if p.requiresAPIKey() && p.APIKey == "" {
 			return fmt.Errorf("sağlayıcı %d (%s): api_key boş olamaz", i, p.Name)
+		}
+		if p.Type == "codex" && !p.hasCodexCredentials() {
+			return fmt.Errorf("sağlayıcı %d (%s): codex için api_key veya oauth access/refresh token gerekli", i, p.Name)
 		}
 	}
 	return nil
+}
+
+func (p Provider) requiresAPIKey() bool {
+	return p.Type == "anthropic" || p.Type == "openai"
+}
+
+func (p Provider) hasCodexCredentials() bool {
+	if p.APIKey != "" {
+		return true
+	}
+	if p.OAuth == nil {
+		return false
+	}
+	return p.OAuth.AccessToken != "" || p.OAuth.RefreshToken != ""
 }
 
 func Load(path string) (*Config, error) {
@@ -59,6 +89,59 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+func LoadForAuth(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &Config{
+				Port:      8787,
+				Providers: []Provider{},
+			}, nil
+		}
+		return nil, fmt.Errorf("config okunamadı: %w", err)
+	}
+
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("config ayrıştırılamadı: %w", err)
+	}
+	if cfg.Port == 0 {
+		cfg.Port = 8787
+	}
+	if cfg.Providers == nil {
+		cfg.Providers = []Provider{}
+	}
+	return &cfg, nil
+}
+
+func (c *Config) Save(path string) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("config yazılamadı: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("config dizini oluşturulamadı: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("config kaydedilemedi: %w", err)
+	}
+	return nil
+}
+
+func (c *Config) UpsertProvider(next Provider) {
+	for i := range c.Providers {
+		if c.Providers[i].Name == next.Name {
+			c.Providers[i] = next
+			return
+		}
+	}
+	c.Providers = append(c.Providers, next)
 }
 
 type Manager struct {
@@ -133,4 +216,30 @@ func (m *Manager) Watch() {
 
 func (m *Manager) Close() {
 	close(m.done)
+}
+
+func (m *Manager) UpdateProviderOAuth(name string, oauth OAuthConfig) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cfgCopy := *m.config
+	cfgCopy.Providers = append([]Provider(nil), m.config.Providers...)
+	updated := false
+	for i := range cfgCopy.Providers {
+		if cfgCopy.Providers[i].Name != name {
+			continue
+		}
+		oauthCopy := oauth
+		cfgCopy.Providers[i].OAuth = &oauthCopy
+		updated = true
+		break
+	}
+	if !updated {
+		return fmt.Errorf("sağlayıcı bulunamadı: %s", name)
+	}
+	if err := cfgCopy.Save(m.configPath); err != nil {
+		return err
+	}
+	m.config = &cfgCopy
+	return nil
 }
