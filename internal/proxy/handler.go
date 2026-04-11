@@ -75,7 +75,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	for _, p := range providers {
 		if active.IsExhausted(p.Name()) {
-			h.logger.Debug("sağlayıcı limiti dolmuş, atlanıyor",
+			h.logger.Info("sağlayıcı limiti dolmuş, atlanıyor",
 				slog.String("provider", p.Name()),
 				slog.String("request_id", reqID),
 			)
@@ -136,6 +136,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Tüm provider'lar exhausted ise, resetleyip tekrar dene
+	if lastErr == nil && len(providers) > 0 {
+		h.logger.Warn("tüm sağlayıcılar limit dolmuş, sıfırlanıyor ve tekrar deneniyor",
+			slog.String("request_id", reqID),
+		)
+		active.ResetAll()
+		for _, p := range providers {
+			err := p.Proxy(r.Context(), w, body, antReq)
+			if err == nil {
+				active.SetLastActive(antReq.Model, p.Name())
+				return
+			}
+			lastErr = err
+			h.logger.Warn("sıfırlama sonrası sağlayıcı başarısız",
+				slog.String("provider", p.Name()),
+				slog.String("error", err.Error()),
+				slog.String("request_id", reqID),
+			)
+		}
+	}
+
 	if lastErr != nil {
 		h.logger.Error("tüm sağlayıcılar başarısız",
 			slog.String("last_error", lastErr.Error()),
@@ -144,9 +165,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sse.WriteError(w, http.StatusBadGateway, "tüm sağlayıcılar başarısız oldu: "+lastErr.Error())
 	} else {
 		h.logger.Error("sağlayıcı yok",
+			slog.String("model", antReq.Model),
 			slog.String("request_id", reqID),
 		)
-		sse.WriteError(w, http.StatusBadGateway, "yapılandırılmış sağlayıcı yok")
+		sse.WriteError(w, http.StatusBadGateway, "yapılandırılmış sağlayıcı yok (model: "+antReq.Model+")")
 	}
 }
 

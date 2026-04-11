@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	"opencode-proxy/internal/anthropic"
@@ -310,11 +311,14 @@ func (p *OpenAIProvider) streamResponse(w http.ResponseWriter, resp *http.Respon
 			// content_block_start: input = {}
 			// content_block_delta: input_json_delta ile partial_json
 			// content_block_stop
-			for i := 0; i < len(pending); i++ {
+			// Index'leri sıralı şekilde işle (map key sıralı olmayabilir)
+			sortedIndices := make([]int, 0, len(pending))
+			for idx := range pending {
+				sortedIndices = append(sortedIndices, idx)
+			}
+			slices.Sort(sortedIndices)
+			for _, i := range sortedIndices {
 				tc := pending[i]
-				if tc == nil {
-					continue
-				}
 				args := tc.Arguments
 				if args == "" {
 					args = "{}"
