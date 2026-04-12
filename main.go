@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lmittmann/tint"
 	"opencode-proxy/internal/auth"
 	"opencode-proxy/internal/config"
 	"opencode-proxy/internal/mcp"
@@ -48,9 +49,7 @@ func main() {
 }
 
 func runMCP() {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
+	logger := newLogger(os.Stderr)
 
 	fetcher := webtools.NewFetcher(logger)
 	searcher := webtools.NewSearcher(logger)
@@ -83,9 +82,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
+	logger := newLogger(stdout)
 
 	mgr, err := config.NewManager(configFile, logger)
 	if err != nil {
@@ -180,4 +177,30 @@ func parseRunFlags(args []string) (string, error) {
 		return "", err
 	}
 	return *configPath, nil
+}
+
+func newLogger(w io.Writer) *slog.Logger {
+	if file, ok := w.(*os.File); ok && isTerminal(file) {
+		return slog.New(tint.NewHandler(w, &tint.Options{
+			Level:      slog.LevelInfo,
+			TimeFormat: time.Kitchen,
+		}))
+	}
+
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+}
+
+func isTerminal(file *os.File) bool {
+	if file == nil {
+		return false
+	}
+
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+
+	return (info.Mode() & os.ModeCharDevice) != 0
 }
