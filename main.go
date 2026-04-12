@@ -26,7 +26,7 @@ var runAuthCommand = func(ctx context.Context, args []string) error {
 	fs.SetOutput(io.Discard)
 
 	configPath := fs.String("config", "config.json", "yapılandırma dosyası yolu")
-	name := fs.String("name", "codex-oauth", "sağlayıcı adı")
+	name := fs.String("name", "", "sağlayıcı adı")
 	baseURL := fs.String("base-url", "https://chatgpt.com/backend-api/codex", "Codex base URL")
 	noBrowser := fs.Bool("no-browser", false, "tarayıcı açma")
 	if err := fs.Parse(args); err != nil {

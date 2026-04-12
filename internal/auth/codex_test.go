@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"opencode-proxy/internal/config"
 )
 
 func TestRunCodexAuthPersistsProviderToConfig(t *testing.T) {
@@ -58,7 +60,6 @@ func TestRunCodexAuthPersistsProviderToConfig(t *testing.T) {
 	var stdout bytes.Buffer
 	err := RunCodexAuth(context.Background(), CodexAuthOptions{
 		ConfigPath:      configPath,
-		Name:            "codex-oauth",
 		BaseURL:         "https://chatgpt.com/backend-api/codex",
 		NoBrowser:       true,
 		HTTPClient:      http.DefaultClient,
@@ -120,6 +121,63 @@ func TestRunCodexAuthPersistsProviderToConfig(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "ABCD-EFGH") {
 		t.Fatalf("stdout user code içermiyor: %s", stdout.String())
+	}
+}
+
+func TestRunCodexAuthGeneratesUniqueDefaultProviderName(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"port":8787,"providers":[{"name":"codex-oauth","type":"codex","base_url":"https://chatgpt.com/backend-api/codex","priority":1,"oauth":{"refresh_token":"refresh-old"}}]}`), 0644); err != nil {
+		t.Fatalf("WriteFile hatası: %v", err)
+	}
+
+	oauthCfg := &config.OAuthConfig{
+		AccessToken:  "access-new",
+		RefreshToken: "refresh-new",
+		IDToken:      "id-new",
+		ExpiresAt:    "2026-04-22T10:00:00Z",
+	}
+
+	var stdout bytes.Buffer
+	if err := persistCodexAuth(CodexAuthOptions{
+		ConfigPath: configPath,
+		BaseURL:    "https://chatgpt.com/backend-api/codex",
+		Stdout:     &stdout,
+	}, oauthCfg); err != nil {
+		t.Fatalf("persistCodexAuth hatası: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile hatası: %v", err)
+	}
+
+	var cfg struct {
+		Providers []struct {
+			Name     string `json:"name"`
+			Priority int    `json:"priority"`
+			OAuth    struct {
+				RefreshToken string `json:"refresh_token"`
+			} `json:"oauth"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("json.Unmarshal hatası: %v", err)
+	}
+	if len(cfg.Providers) != 2 {
+		t.Fatalf("providers = %d, want 2", len(cfg.Providers))
+	}
+	if cfg.Providers[1].Name != "codex-oauth-2" {
+		t.Fatalf("name = %q, want codex-oauth-2", cfg.Providers[1].Name)
+	}
+	if cfg.Providers[1].Priority != 2 {
+		t.Fatalf("priority = %d, want 2", cfg.Providers[1].Priority)
+	}
+	if cfg.Providers[1].OAuth.RefreshToken != "refresh-new" {
+		t.Fatalf("refresh_token = %q, want refresh-new", cfg.Providers[1].OAuth.RefreshToken)
+	}
+	if !strings.Contains(stdout.String(), "Codex auth kaydedildi: codex-oauth-2") {
+		t.Fatalf("stdout benzersiz adı içermiyor: %s", stdout.String())
 	}
 }
 

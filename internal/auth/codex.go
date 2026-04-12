@@ -183,28 +183,26 @@ func persistCodexAuth(opts CodexAuthOptions, oauthCfg *config.OAuthConfig) error
 		return err
 	}
 
+	providerName := resolveProviderName(cfg, opts.Name)
 	cfg.UpsertProvider(config.Provider{
-		Name:     opts.Name,
+		Name:     providerName,
 		Type:     "codex",
 		BaseURL:  opts.BaseURL,
 		OAuth:    oauthCfg,
-		Priority: nextPriority(cfg, opts.Name),
+		Priority: nextPriority(cfg, providerName),
 	})
 
 	if err := cfg.Save(opts.ConfigPath); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(opts.Stdout, "Codex auth kaydedildi: %s\n", opts.Name)
+	fmt.Fprintf(opts.Stdout, "Codex auth kaydedildi: %s\n", providerName)
 	return nil
 }
 
 func applyCodexAuthDefaults(opts *CodexAuthOptions) {
 	if opts.ConfigPath == "" {
 		opts.ConfigPath = "config.json"
-	}
-	if opts.Name == "" {
-		opts.Name = "codex-oauth"
 	}
 	if opts.BaseURL == "" {
 		opts.BaseURL = defaultCodexBaseURL
@@ -422,6 +420,41 @@ func nextPriority(cfg *config.Config, name string) int {
 		}
 	}
 	return maxPriority + 1
+}
+
+func resolveProviderName(cfg *config.Config, requested string) string {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return uniqueProviderName(cfg, "codex-oauth")
+	}
+	if requested != "codex-oauth" {
+		return requested
+	}
+	if !providerNameExists(cfg, requested) {
+		return requested
+	}
+	return uniqueProviderName(cfg, requested)
+}
+
+func uniqueProviderName(cfg *config.Config, base string) string {
+	if !providerNameExists(cfg, base) {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if !providerNameExists(cfg, candidate) {
+			return candidate
+		}
+	}
+}
+
+func providerNameExists(cfg *config.Config, name string) bool {
+	for _, provider := range cfg.Providers {
+		if provider.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func openBrowser(rawURL string) error {
