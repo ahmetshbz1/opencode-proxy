@@ -10,13 +10,16 @@ import (
 
 // ToOpenAI, Anthropic formatındaki isteği OpenAI formatına dönüştürür.
 func ToOpenAI(req anthropic.Request) openai.Request {
+	chatTemplateKwargs := mergeChatTemplateKwargs(req)
+
 	oai := openai.Request{
-		Model:       req.Model,
-		MaxTokens:   req.MaxTokens,
-		Stream:      req.Stream,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		Stop:        req.StopSequences,
+		Model:              req.Model,
+		MaxTokens:          effectiveMaxTokens(req),
+		Stream:             req.Stream,
+		Temperature:        req.Temperature,
+		TopP:               req.TopP,
+		Stop:               req.StopSequences,
+		ChatTemplateKwargs: chatTemplateKwargs,
 	}
 
 	oai.Messages = append(oai.Messages, convertSystem(req.System)...)
@@ -37,6 +40,41 @@ func ToOpenAI(req anthropic.Request) openai.Request {
 	}
 
 	return oai
+}
+
+func mergeChatTemplateKwargs(req anthropic.Request) *openai.ChatTemplateKwargs {
+	var kwargs *openai.ChatTemplateKwargs
+
+	if req.ChatTemplateKwargs != nil {
+		copy := openai.ChatTemplateKwargs(*req.ChatTemplateKwargs)
+		kwargs = &copy
+	}
+
+	if req.Thinking != nil {
+		if kwargs == nil {
+			kwargs = &openai.ChatTemplateKwargs{}
+		}
+		kwargs.EnableThinking = true
+	}
+
+	if kwargs == nil {
+		return nil
+	}
+
+	if !kwargs.EnableThinking && !kwargs.ClearThinking {
+		return nil
+	}
+
+	return kwargs
+}
+
+func effectiveMaxTokens(req anthropic.Request) int {
+	maxTokens := req.MaxTokens
+	if req.Thinking == nil || req.Thinking.BudgetTokens <= 0 {
+		return maxTokens
+	}
+
+	return maxTokens + req.Thinking.BudgetTokens
 }
 
 func convertSystem(sys json.RawMessage) []openai.Message {

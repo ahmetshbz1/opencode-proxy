@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"opencode-proxy/internal/anthropic"
@@ -83,19 +84,35 @@ func TestOpenAINonStream(t *testing.T) {
 
 		content := "merhaba"
 		finish := "stop"
+		reasoning := "düşünce"
 		resp := openai.Response{ID: "chatcmpl-123"}
-		resp.Choices = make([]struct {
+		resp.Choices = []struct {
 			Message struct {
-				Role             string           `json:"role"`
-				Content          *string          `json:"content"`
-				ReasoningContent *string          `json:"reasoning_content,omitempty"`
+				Role             string            `json:"role"`
+				Content          *string           `json:"content"`
+				ReasoningContent *string           `json:"reasoning_content,omitempty"`
+				Reasoning        *string           `json:"reasoning,omitempty"`
+				Thinking         *string           `json:"thinking,omitempty"`
 				ToolCalls        []openai.ToolCall `json:"tool_calls,omitempty"`
 			} `json:"message"`
 			FinishReason *string `json:"finish_reason"`
-		}, 1)
-		resp.Choices[0].Message.Role = "assistant"
-		resp.Choices[0].Message.Content = &content
-		resp.Choices[0].FinishReason = &finish
+		}{
+			{
+				Message: struct {
+					Role             string            `json:"role"`
+					Content          *string           `json:"content"`
+					ReasoningContent *string           `json:"reasoning_content,omitempty"`
+					Reasoning        *string           `json:"reasoning,omitempty"`
+					Thinking         *string           `json:"thinking,omitempty"`
+					ToolCalls        []openai.ToolCall `json:"tool_calls,omitempty"`
+				}{
+					Role:      "assistant",
+					Content:   &content,
+					Reasoning: &reasoning,
+				},
+				FinishReason: &finish,
+			},
+		}
 		resp.Usage.PromptTokens = 10
 		resp.Usage.CompletionTokens = 5
 
@@ -118,6 +135,9 @@ func TestOpenAINonStream(t *testing.T) {
 	}
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if !strings.Contains(w.Body.String(), "düşünce") {
+		t.Fatalf("thinking içeriği yok: %s", w.Body.String())
 	}
 }
 

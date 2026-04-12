@@ -64,6 +64,14 @@ func (p *OpenAIProvider) Proxy(ctx context.Context, w http.ResponseWriter, _ []b
 		slog.String("request_id", reqID),
 	)
 
+	p.logger.Info("openai request params",
+		slog.String("provider", p.name),
+		slog.String("model", oaiReq.Model),
+		slog.Int("max_tokens", oaiReq.MaxTokens),
+		slog.Bool("stream", oaiReq.Stream),
+		slog.Bool("thinking_enabled", oaiReq.ChatTemplateKwargs != nil && oaiReq.ChatTemplateKwargs.EnableThinking),
+	)
+
 	resp, err := p.client.Do(proxyReq)
 	if err != nil {
 		return &ProxyError{ProviderName: p.name, Message: err.Error(), Retryable: true}
@@ -117,12 +125,15 @@ func (p *OpenAIProvider) nonStreamResponse(w http.ResponseWriter, resp *http.Res
 
 	if len(oaiResp.Choices) > 0 {
 		choice := oaiResp.Choices[0]
-
-		// Thinking block'u content'in başına ekle
-		if choice.Message.ReasoningContent != nil && *choice.Message.ReasoningContent != "" {
+		reasoning := firstNonEmptyPtr(
+			choice.Message.ReasoningContent,
+			choice.Message.Reasoning,
+			choice.Message.Thinking,
+		)
+		if reasoning != "" {
 			content = append(content, anthropic.ThinkingBlock{
 				Type:     "thinking",
-				Thinking: *choice.Message.ReasoningContent,
+				Thinking: reasoning,
 			})
 		}
 
@@ -182,7 +193,6 @@ func (p *OpenAIProvider) streamResponse(w http.ResponseWriter, resp *http.Respon
 	w.Header().Set("anthropic-version", "2023-06-01")
 
 	msgID := "msg-proxy-" + genMessageID()
-
 	sse.Send(w, flusher, "message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
@@ -193,37 +203,33 @@ func (p *OpenAIProvider) streamResponse(w http.ResponseWriter, resp *http.Respon
 		},
 	})
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
 	type blockState struct {
-		idx   int
-		open  bool
-		bType string // "thinking" veya "text"
+		idx  int
+		open bool
 	}
 
-	thinkingBlock := blockState{idx: 0, bType: "thinking"}
-	textBlock := blockState{idx: 1, bType: "text"}
+	thinkingBlock := blockState{idx: 0}
+	textBlock := blockState{idx: 1}
 	nextBlockIdx := 2
-	thinkingOpen := false
-	textOpen := false
-
 	outputTokens := 0
 	pending := make(map[int]*openai.ToolCallAccumulator)
+	stopReason := "end_turn"
+	streamDone := false
+	var eventLines []string
 
 	closeBlock := func(bs *blockState) {
 		if !bs.open {
 			return
 		}
 		sse.Send(w, flusher, "content_block_stop", map[string]any{
-			"type": "content_block_stop", "index": bs.idx,
+			"type": "content_block_stop",
+			"index": bs.idx,
 		})
 		bs.open = false
 	}
 
-	// İlk reasoning_content geldiğinde thinking block aç
 	ensureThinkingOpen := func() {
-		if thinkingOpen {
+		if thinkingBlock.open {
 			return
 		}
 		sse.Send(w, flusher, "content_block_start", map[string]any{
@@ -232,44 +238,59 @@ func (p *OpenAIProvider) streamResponse(w http.ResponseWriter, resp *http.Respon
 			"content_block": map[string]any{"type": "thinking", "thinking": ""},
 		})
 		thinkingBlock.open = true
-		thinkingOpen = true
 	}
 
-	// İlk text geldiğinde text block aç
 	ensureTextOpen := func() {
-		if textOpen {
+		if textBlock.open {
 			return
 		}
 		closeBlock(&thinkingBlock)
-		thinkingOpen = false
 		sse.Send(w, flusher, "content_block_start", map[string]any{
 			"type":          "content_block_start",
 			"index":         textBlock.idx,
 			"content_block": map[string]any{"type": "text", "text": ""},
 		})
 		textBlock.open = true
-		textOpen = true
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
+	emitToolBlocks := func() {
+		sortedIndices := make([]int, 0, len(pending))
+		for idx := range pending {
+			sortedIndices = append(sortedIndices, idx)
 		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
+		slices.Sort(sortedIndices)
+		for _, i := range sortedIndices {
+			tc := pending[i]
+			args := tc.Arguments
+			if args == "" {
+				args = "{}"
+			}
+			idx := nextBlockIdx
+			nextBlockIdx++
+			sse.Send(w, flusher, "content_block_start", map[string]any{
+				"type":  "content_block_start",
+				"index": idx,
+				"content_block": map[string]any{
+					"type": "tool_use", "id": tc.ID, "name": tc.Name,
+					"input": map[string]any{},
+				},
+			})
+			sse.Send(w, flusher, "content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": idx,
+				"delta": map[string]any{
+					"type":         "input_json_delta",
+					"partial_json": args,
+				},
+			})
+			sse.Send(w, flusher, "content_block_stop", map[string]any{
+				"type": "content_block_stop",
+				"index": idx,
+			})
 		}
+	}
 
-		var chunk openai.StreamChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-		choice := chunk.Choices[0]
-
+	processChunk := func(choice openai.StreamChunkChoice) {
 		for _, tcDelta := range choice.Delta.ToolCalls {
 			acc, exists := pending[tcDelta.Index]
 			if !exists {
@@ -279,18 +300,21 @@ func (p *OpenAIProvider) streamResponse(w http.ResponseWriter, resp *http.Respon
 			acc.Arguments += tcDelta.Function.Arguments
 		}
 
-		// Reasoning content → thinking block
-		if choice.Delta.ReasoningContent != "" {
+		reasoningText := firstNonEmpty(
+			choice.Delta.ReasoningContent,
+			choice.Delta.Reasoning,
+			choice.Delta.Thinking,
+		)
+		if reasoningText != "" {
 			ensureThinkingOpen()
 			outputTokens++
 			sse.Send(w, flusher, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
 				"index": thinkingBlock.idx,
-				"delta": map[string]any{"type": "thinking_delta", "thinking": choice.Delta.ReasoningContent},
+				"delta": map[string]any{"type": "thinking_delta", "thinking": reasoningText},
 			})
 		}
 
-		// Normal content → text block
 		if choice.Delta.Content != "" {
 			ensureTextOpen()
 			outputTokens++
@@ -302,65 +326,94 @@ func (p *OpenAIProvider) streamResponse(w http.ResponseWriter, resp *http.Respon
 		}
 
 		if choice.FinishReason != nil {
-			closeBlock(&thinkingBlock)
-			thinkingOpen = false
-			closeBlock(&textBlock)
-			textOpen = false
-
-			// Tool call block'ları - Anthropic streaming protokolüne uygun:
-			// content_block_start: input = {}
-			// content_block_delta: input_json_delta ile partial_json
-			// content_block_stop
-			// Index'leri sıralı şekilde işle (map key sıralı olmayabilir)
-			sortedIndices := make([]int, 0, len(pending))
-			for idx := range pending {
-				sortedIndices = append(sortedIndices, idx)
-			}
-			slices.Sort(sortedIndices)
-			for _, i := range sortedIndices {
-				tc := pending[i]
-				args := tc.Arguments
-				if args == "" {
-					args = "{}"
-				}
-				idx := nextBlockIdx
-				nextBlockIdx++
-				sse.Send(w, flusher, "content_block_start", map[string]any{
-					"type":  "content_block_start",
-					"index": idx,
-					"content_block": map[string]any{
-						"type": "tool_use", "id": tc.ID, "name": tc.Name,
-						"input": map[string]any{},
-					},
-				})
-				sse.Send(w, flusher, "content_block_delta", map[string]any{
-					"type":  "content_block_delta",
-					"index": idx,
-					"delta": map[string]any{
-						"type":         "input_json_delta",
-						"partial_json": args,
-					},
-				})
-				sse.Send(w, flusher, "content_block_stop", map[string]any{
-					"type": "content_block_stop", "index": idx,
-				})
-			}
-
-			stopReason := "end_turn"
+			p.logger.Info("openai stream finish_reason",
+				slog.String("provider", p.name),
+				slog.String("model", model),
+				slog.String("finish_reason", *choice.FinishReason),
+				slog.Int("pending_tools", len(pending)),
+				slog.Int("output_tokens_seen", outputTokens),
+			)
 			if len(pending) > 0 {
 				stopReason = "tool_use"
 			} else if *choice.FinishReason == "length" {
 				stopReason = "max_tokens"
 			}
-
-			sse.Send(w, flusher, "message_delta", map[string]any{
-				"type":  "message_delta",
-				"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
-				"usage": map[string]any{"output_tokens": outputTokens},
-			})
-			sse.Send(w, flusher, "message_stop", map[string]any{"type": "message_stop"})
 		}
 	}
+
+	flushEventLines := func() {
+		for _, eventLine := range eventLines {
+			if !strings.HasPrefix(eventLine, "data: ") {
+				continue
+			}
+			data := strings.TrimPrefix(eventLine, "data: ")
+			if data == "[DONE]" {
+				streamDone = true
+				continue
+			}
+			var chunk openai.StreamChunk
+			if json.Unmarshal([]byte(data), &chunk) != nil || len(chunk.Choices) == 0 {
+				continue
+			}
+			processChunk(chunk.Choices[0])
+		}
+		eventLines = eventLines[:0]
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil && len(line) == 0 {
+			break
+		}
+
+		trimmed := strings.TrimRight(line, "\r\n")
+		if trimmed == "" {
+			flushEventLines()
+			if streamDone {
+				break
+			}
+		} else {
+			eventLines = append(eventLines, trimmed)
+		}
+
+		if err != nil {
+			break
+		}
+	}
+
+	if len(eventLines) > 0 {
+		flushEventLines()
+	}
+
+	closeBlock(&thinkingBlock)
+	closeBlock(&textBlock)
+	emitToolBlocks()
+
+	sse.Send(w, flusher, "message_delta", map[string]any{
+		"type":  "message_delta",
+		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
+		"usage": map[string]any{"output_tokens": outputTokens},
+	})
+	sse.Send(w, flusher, "message_stop", map[string]any{"type": "message_stop"})
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstNonEmptyPtr(values ...*string) string {
+	for _, value := range values {
+		if value != nil && *value != "" {
+			return *value
+		}
+	}
+	return ""
 }
 
 func genMessageID() string {

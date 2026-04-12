@@ -6,18 +6,24 @@ import (
 	"strings"
 )
 
+type ChatTemplateKwargs struct {
+	EnableThinking bool `json:"enable_thinking,omitempty"`
+	ClearThinking  bool `json:"clear_thinking,omitempty"`
+}
+
 type Request struct {
-	Model         string          `json:"model"`
-	MaxTokens     int             `json:"max_tokens"`
-	Messages      []Message       `json:"messages"`
-	System        json.RawMessage `json:"system,omitempty"`
-	Stream        bool            `json:"stream,omitempty"`
-	Temperature   *float64        `json:"temperature,omitempty"`
-	TopP          *float64        `json:"top_p,omitempty"`
-	TopK          *int            `json:"top_k,omitempty"`
-	StopSequences []string        `json:"stop_sequences,omitempty"`
-	Tools         []Tool          `json:"tools,omitempty"`
-	Thinking      *Thinking       `json:"thinking,omitempty"`
+	Model              string             `json:"model"`
+	MaxTokens          int                `json:"max_tokens"`
+	Messages           []Message          `json:"messages"`
+	System             json.RawMessage    `json:"system,omitempty"`
+	Stream             bool               `json:"stream,omitempty"`
+	Temperature        *float64           `json:"temperature,omitempty"`
+	TopP               *float64           `json:"top_p,omitempty"`
+	TopK               *int               `json:"top_k,omitempty"`
+	StopSequences      []string           `json:"stop_sequences,omitempty"`
+	Tools              []Tool             `json:"tools,omitempty"`
+	Thinking           *Thinking          `json:"thinking,omitempty"`
+	ChatTemplateKwargs *ChatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
 }
 
 type Thinking struct {

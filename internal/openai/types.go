@@ -2,15 +2,21 @@ package openai
 
 import "encoding/json"
 
+type ChatTemplateKwargs struct {
+	EnableThinking bool `json:"enable_thinking,omitempty"`
+	ClearThinking  bool `json:"clear_thinking,omitempty"`
+}
+
 type Request struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
-	Temperature *float64  `json:"temperature,omitempty"`
-	TopP        *float64  `json:"top_p,omitempty"`
-	Stop        []string  `json:"stop,omitempty"`
-	Tools       []Tool    `json:"tools,omitempty"`
+	Model              string             `json:"model"`
+	Messages           []Message          `json:"messages"`
+	MaxTokens          int                `json:"max_tokens,omitempty"`
+	Stream             bool               `json:"stream,omitempty"`
+	Temperature        *float64           `json:"temperature,omitempty"`
+	TopP               *float64           `json:"top_p,omitempty"`
+	Stop               []string           `json:"stop,omitempty"`
+	Tools              []Tool             `json:"tools,omitempty"`
+	ChatTemplateKwargs *ChatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
 }
 
 type Message struct {
@@ -43,21 +49,27 @@ type ToolFn struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
+type StreamChunkDelta struct {
+	Role             string          `json:"role,omitempty"`
+	Content          string          `json:"content,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	Reasoning        string          `json:"reasoning,omitempty"`
+	Thinking         string          `json:"thinking,omitempty"`
+	ToolCalls        []ToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+type StreamChunkChoice struct {
+	Index        int              `json:"index"`
+	Delta        StreamChunkDelta `json:"delta"`
+	FinishReason *string          `json:"finish_reason"`
+}
+
 type StreamChunk struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Model   string `json:"model,omitempty"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role             string          `json:"role,omitempty"`
-			Content          string          `json:"content,omitempty"`
-			ReasoningContent string          `json:"reasoning_content,omitempty"`
-			ToolCalls        []ToolCallDelta `json:"tool_calls,omitempty"`
-		} `json:"delta"`
-		FinishReason *string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage *struct {
+	ID      string              `json:"id"`
+	Object  string              `json:"object"`
+	Model   string              `json:"model,omitempty"`
+	Choices []StreamChunkChoice `json:"choices"`
+	Usage   *struct {
 		PromptTokens     int `json:"prompt_tokens,omitempty"`
 		CompletionTokens int `json:"completion_tokens,omitempty"`
 		TotalTokens      int `json:"total_tokens,omitempty"`
@@ -82,6 +94,8 @@ type Response struct {
 			Role             string     `json:"role"`
 			Content          *string    `json:"content"`
 			ReasoningContent *string    `json:"reasoning_content,omitempty"`
+			Reasoning        *string    `json:"reasoning,omitempty"`
+			Thinking         *string    `json:"thinking,omitempty"`
 			ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		FinishReason *string `json:"finish_reason"`
