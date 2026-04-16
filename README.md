@@ -92,12 +92,45 @@ Modeli `glm-5.1` yaparsan glm kümesine, `gpt-5.4` yaparsan codex kümesine gide
 |------|-----------|
 | `port` | Proxy dinleme portu |
 | `name` | Sağlayıcı adı |
-| `type` | `anthropic`, `openai`, `codex` |
+| `type` | `anthropic`, `openai`, `codex`, `anthropic_passthrough` |
 | `base_url` | Sağlayıcı API endpoint'i |
 | `api_key` | API anahtarı |
 | `oauth` | Codex OAuth bilgileri |
 | `models` | Sağlayıcının kabul ettiği explicit model desenleri |
 | `priority` | Geriye dönük config alanı; seçim mantığında belirleyici değil |
+
+### Claude Code Native Abonelik ile Kullanım
+
+`anthropic_passthrough` tipi, Claude Code'un kendi API key'ini kullanarak gerçek Anthropic API'ye yönlendirme yapar. Bu sayede:
+
+- **Opus** modeli için Claude Code aboneliğinden kullanım
+- **Sonnet/Haiku** modelleri için proxy üzerinden alternatif provider kullanımı
+
+**Örnek config:**
+
+```json
+{
+  "name": "claude-native",
+  "type": "anthropic_passthrough",
+  "base_url": "https://api.anthropic.com",
+  "api_key": "",
+  "models": ["claude-opus-4-7"]
+}
+```
+
+Claude Code `settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "fake_key",
+    "ANTHROPIC_BASE_URL": "http://localhost:8787",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-20250514",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5.4"
+  }
+}
+```
 
 ## Routing Kuralları
 

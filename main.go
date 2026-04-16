@@ -131,8 +131,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	handler := middleware.Chain(mux,
 		middleware.Recovery(logger),
-		middleware.Logging(logger),
 		middleware.RequestID,
+		middleware.Logging(logger),
 	)
 
 	srv := &http.Server{

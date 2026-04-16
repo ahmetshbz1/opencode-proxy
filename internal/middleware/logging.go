@@ -36,11 +36,18 @@ func Logging(logger *slog.Logger) Middleware {
 
 			next.ServeHTTP(wrapped, r)
 
+			var providerName, cluster string
+			if info := GetRequestInfo(r.Context()); info != nil {
+				providerName, cluster = info.Get()
+			}
+
 			logger.Info("istek tamamlandı",
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.Int("status", wrapped.status),
 				slog.Duration("duration", time.Since(start)),
+				slog.String("cluster", cluster),
+				slog.String("provider", providerName),
 				slog.String("request_id", GetRequestID(r.Context())),
 			)
 		})

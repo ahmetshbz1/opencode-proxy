@@ -46,7 +46,7 @@ func (c *Config) Validate() error {
 		if p.Name == "" {
 			return fmt.Errorf("sağlayıcı %d: isim boş olamaz", i)
 		}
-		if p.Type != "anthropic" && p.Type != "openai" && p.Type != "codex" {
+		if p.Type != "anthropic" && p.Type != "openai" && p.Type != "codex" && p.Type != "anthropic_passthrough" {
 			return fmt.Errorf("sağlayıcı %d (%s): bilinmeyen tip %q", i, p.Name, p.Type)
 		}
 		if p.BaseURL == "" {
@@ -64,6 +64,10 @@ func (c *Config) Validate() error {
 
 func (p Provider) requiresAPIKey() bool {
 	return p.Type == "anthropic" || p.Type == "openai"
+}
+
+func (p Provider) requiresIncomingAPIKey() bool {
+	return p.Type == "anthropic_passthrough"
 }
 
 func (p Provider) hasCodexCredentials() bool {

@@ -40,7 +40,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reqID := middleware.GetRequestID(r.Context())
+	// Extract API key from request header and add to context for passthrough providers
+	apiKey := r.Header.Get("x-api-key")
+	if apiKey == "" {
+		apiKey = r.Header.Get("X-Api-Key")
+	}
+	if apiKey == "" {
+		apiKey = r.Header.Get("Authorization")
+		// Remove "Bearer " prefix if present
+		if len(apiKey) > 7 && strings.HasPrefix(strings.ToLower(apiKey), "bearer ") {
+			apiKey = apiKey[7:]
+		}
+	}
+	ctx := provider.WithAPIKey(r.Context(), apiKey)
+
+	reqID := middleware.GetRequestID(ctx)
 	isTokenCount := strings.HasSuffix(r.URL.Path, "/count_tokens")
 	active := h.registry.Active()
 
@@ -51,7 +65,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if active.IsExhausted(p.Name()) {
 				continue
 			}
-			if err := p.Proxy(r.Context(), w, body, antReq); err != nil {
+			if info := middleware.GetRequestInfo(ctx); info != nil {
+				info.Set(p.Name(), h.registry.TypeFor(p.Name()))
+			}
+			if err := p.Proxy(ctx, w, body, antReq); err != nil {
 				h.logger.Warn("token sayma başarısız",
 					slog.String("provider", p.Name()),
 					slog.String("error", err.Error()),
@@ -87,7 +104,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		err := p.Proxy(r.Context(), w, body, antReq)
+		if info := middleware.GetRequestInfo(ctx); info != nil {
+			info.Set(p.Name(), h.registry.TypeFor(p.Name()))
+		}
+
+		err := p.Proxy(ctx, w, body, antReq)
 		if err == nil {
 			// Başarılı — provider'ın exhausted işaretini temizle
 			active.ClearExhausted(p.Name())
@@ -122,7 +143,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	active.ResetAll()
 
 	for _, p := range providers {
-		err := p.Proxy(r.Context(), w, body, antReq)
+		if info := middleware.GetRequestInfo(ctx); info != nil {
+			info.Set(p.Name(), h.registry.TypeFor(p.Name()))
+		}
+		err := p.Proxy(ctx, w, body, antReq)
 		if err == nil {
 			return
 		}

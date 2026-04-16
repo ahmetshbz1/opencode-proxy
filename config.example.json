@@ -2,6 +2,16 @@
   "port": 8787,
   "providers": [
     {
+      "name": "claude-native",
+      "type": "anthropic_passthrough",
+      "base_url": "https://api.anthropic.com",
+      "api_key": "",
+      "models": [
+        "claude-opus-*"
+      ],
+      "priority": 0
+    },
+    {
       "name": "z.ai",
       "type": "anthropic",
       "base_url": "https://api.z.ai/api/anthropic",

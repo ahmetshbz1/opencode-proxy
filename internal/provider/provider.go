@@ -43,6 +43,7 @@ type Registry struct {
 type providerEntry struct {
 	provider Provider
 	models   []string
+	typ      string
 }
 
 func NewRegistry(client *http.Client, logger *slog.Logger) *Registry {
@@ -77,11 +78,14 @@ func (r *Registry) RebuildFromConfig(cfgs []config.Provider) {
 				}
 			}
 			built = NewCodex(c, r.client, r.logger)
+		case "anthropic_passthrough":
+			built = NewAnthropicPassthrough(c, r.client, r.logger)
 		}
 		if built != nil {
 			r.providers = append(r.providers, providerEntry{
 				provider: built,
 				models:   c.Models,
+				typ:      c.Type,
 			})
 		}
 	}
@@ -123,6 +127,19 @@ func (r *Registry) SetOAuthPersister(fn func(name string, oauth config.OAuthConf
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.persistOAuth = fn
+}
+
+// TypeFor, bir provider'ın config'teki type değerini döndürür (küme adı).
+// Bilinmeyen provider için boş string döner.
+func (r *Registry) TypeFor(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, entry := range r.providers {
+		if entry.provider.Name() == name {
+			return entry.typ
+		}
+	}
+	return ""
 }
 
 func (e providerEntry) matchesModel(model string) bool {
