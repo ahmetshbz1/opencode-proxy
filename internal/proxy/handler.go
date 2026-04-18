@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -50,117 +51,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := provider.WithAPIKey(r.Context(), reqCtx.apiKey)
-	body := reqCtx.body
-	antReq := reqCtx.request
-	isTokenCount := reqCtx.isTokenCount
-	reqID := middleware.GetRequestID(ctx)
-	active := h.registry.Active()
-
-	// Token sayma — sadece ilk uygun provider, retry yok
-	if isTokenCount {
-		providers := h.registry.OrderedForModel(antReq.Model)
-		for _, p := range providers {
-			if active.IsExhausted(p.Name()) {
-				continue
-			}
-			if info := middleware.GetRequestInfo(ctx); info != nil {
-				info.Set(p.Name(), h.registry.TypeFor(p.Name()))
-			}
-			if err := p.Proxy(ctx, w, body, antReq); err != nil {
-				h.logger.Warn("token sayma başarısız",
-					slog.String("provider", p.Name()),
-					slog.String("error", err.Error()),
-					slog.String("request_id", reqID),
-				)
-			}
-			return
-		}
-		sse.WriteError(w, http.StatusBadGateway, "aktif sağlayıcı yok (token sayma)")
+	if reqCtx.isTokenCount {
+		h.handleTokenCount(ctx, w, reqCtx)
 		return
 	}
-
-	// Normal istek — round-robin ile provider seçimi, rate limit = hemen sonrakine geç
-	providers := h.registry.OrderedForModel(antReq.Model)
-	if len(providers) == 0 {
-		sse.WriteError(w, http.StatusBadGateway, "yapılandırılmış sağlayıcı yok (model: "+antReq.Model+")")
-		return
-	}
-
-	// Round-robin: her istekte farklı provider'dan başla
-	startIdx := active.NextRRIndex(antReq.Model, len(providers))
-
-	var lastErr error
-	for i := 0; i < len(providers); i++ {
-		idx := (startIdx + i) % len(providers)
-		p := providers[idx]
-
-		if active.IsExhausted(p.Name()) {
-			h.logger.Debug("sağlayıcı limiti dolmuş, atlanıyor",
-				slog.String("provider", p.Name()),
-				slog.String("request_id", reqID),
-			)
-			continue
-		}
-
-		if info := middleware.GetRequestInfo(ctx); info != nil {
-			info.Set(p.Name(), h.registry.TypeFor(p.Name()))
-		}
-
-		err := p.Proxy(ctx, w, body, antReq)
-		if err == nil {
-			// Başarılı — provider'ın exhausted işaretini temizle
-			active.ClearExhausted(p.Name())
-			return
-		}
-
-		lastErr = err
-
-		// Rate limit / kota hatası → provider'ı cooldown'a al, hemen sonrakine geç
-		if provider.IsQuotaError(err) {
-			h.logger.Warn("sağlayıcı limiti doldu, sonrakine geçiliyor",
-				slog.String("provider", p.Name()),
-				slog.String("error", err.Error()),
-				slog.String("request_id", reqID),
-			)
-			active.MarkExhausted(p.Name())
-			continue
-		}
-
-		// Geçici hata — retry yok, hemen sonrakine geç
-		h.logger.Warn("sağlayıcı hata, sonrakine geçiliyor",
-			slog.String("provider", p.Name()),
-			slog.String("error", err.Error()),
-			slog.String("request_id", reqID),
-		)
-	}
-
-	// Tüm provider'lar exhausted ise — cooldown'u sıfırlayıp bir daha dene
-	h.logger.Warn("tüm sağlayıcılar limit dolmuş, sıfırlanıyor ve tekrar deneniyor",
-		slog.String("request_id", reqID),
-	)
-	active.ResetAll()
-
-	for _, p := range providers {
-		if info := middleware.GetRequestInfo(ctx); info != nil {
-			info.Set(p.Name(), h.registry.TypeFor(p.Name()))
-		}
-		err := p.Proxy(ctx, w, body, antReq)
-		if err == nil {
-			return
-		}
-		lastErr = err
-		h.logger.Warn("sıfırlama sonrası sağlayıcı başarısız",
-			slog.String("provider", p.Name()),
-			slog.String("error", err.Error()),
-			slog.String("request_id", reqID),
-		)
-	}
-
-	if lastErr != nil {
-		sse.WriteError(w, http.StatusBadGateway, "tüm sağlayıcılar başarısız oldu: "+lastErr.Error())
-	} else {
-		sse.WriteError(w, http.StatusBadGateway, "yapılandırılmış sağlayıcı yok (model: "+antReq.Model+")")
-	}
+	h.handleMessage(ctx, w, reqCtx)
 }
 
 func (h *Handler) parseRequest(r *http.Request) (*requestContext, error) {
@@ -183,6 +78,95 @@ func (h *Handler) parseRequest(r *http.Request) (*requestContext, error) {
 		apiKey:       extractAPIKey(r),
 		isTokenCount: strings.HasSuffix(r.URL.Path, "/count_tokens"),
 	}, nil
+}
+
+func (h *Handler) handleTokenCount(ctx context.Context, w http.ResponseWriter, reqCtx *requestContext) {
+	providers := h.registry.OrderedForModel(reqCtx.request.Model)
+	active := h.registry.Active()
+	reqID := middleware.GetRequestID(ctx)
+	for _, p := range providers {
+		if active.IsExhausted(p.Name()) {
+			continue
+		}
+		h.attachRequestInfo(ctx, p.Name())
+		if err := p.Proxy(ctx, w, reqCtx.body, reqCtx.request); err != nil {
+			h.logger.Warn("token sayma başarısız",
+				slog.String("provider", p.Name()),
+				slog.String("error", err.Error()),
+				slog.String("request_id", reqID),
+			)
+		}
+		return
+	}
+	sse.WriteError(w, http.StatusBadGateway, "aktif sağlayıcı yok (token sayma)")
+}
+
+func (h *Handler) handleMessage(ctx context.Context, w http.ResponseWriter, reqCtx *requestContext) {
+	providers := h.registry.OrderedForModel(reqCtx.request.Model)
+	if len(providers) == 0 {
+		sse.WriteError(w, http.StatusBadGateway, "yapılandırılmış sağlayıcı yok (model: "+reqCtx.request.Model+")")
+		return
+	}
+	startIdx := h.registry.Active().NextRRIndex(reqCtx.request.Model, len(providers))
+	lastErr := h.tryProviders(ctx, w, providers, reqCtx, startIdx)
+	if lastErr == nil {
+		return
+	}
+	h.logger.Warn("tüm sağlayıcılar limit dolmuş, sıfırlanıyor ve tekrar deneniyor",
+		slog.String("request_id", middleware.GetRequestID(ctx)),
+	)
+	h.registry.Active().ResetAll()
+	lastErr = h.tryProviders(ctx, w, providers, reqCtx, 0)
+	if lastErr != nil {
+		sse.WriteError(w, http.StatusBadGateway, "tüm sağlayıcılar başarısız oldu: "+lastErr.Error())
+		return
+	}
+	sse.WriteError(w, http.StatusBadGateway, "yapılandırılmış sağlayıcı yok (model: "+reqCtx.request.Model+")")
+}
+
+func (h *Handler) tryProviders(ctx context.Context, w http.ResponseWriter, providers []provider.Provider, reqCtx *requestContext, startIdx int) error {
+	active := h.registry.Active()
+	reqID := middleware.GetRequestID(ctx)
+	var lastErr error
+	for i := range len(providers) {
+		idx := (startIdx + i) % len(providers)
+		p := providers[idx]
+		if active.IsExhausted(p.Name()) {
+			h.logger.Debug("sağlayıcı limiti dolmuş, atlanıyor",
+				slog.String("provider", p.Name()),
+				slog.String("request_id", reqID),
+			)
+			continue
+		}
+		h.attachRequestInfo(ctx, p.Name())
+		err := p.Proxy(ctx, w, reqCtx.body, reqCtx.request)
+		if err == nil {
+			active.ClearExhausted(p.Name())
+			return nil
+		}
+		lastErr = err
+		if provider.IsQuotaError(err) {
+			h.logger.Warn("sağlayıcı limiti doldu, sonrakine geçiliyor",
+				slog.String("provider", p.Name()),
+				slog.String("error", err.Error()),
+				slog.String("request_id", reqID),
+			)
+			active.MarkExhausted(p.Name())
+			continue
+		}
+		h.logger.Warn("sağlayıcı hata, sonrakine geçiliyor",
+			slog.String("provider", p.Name()),
+			slog.String("error", err.Error()),
+			slog.String("request_id", reqID),
+		)
+	}
+	return lastErr
+}
+
+func (h *Handler) attachRequestInfo(ctx context.Context, providerName string) {
+	if info := middleware.GetRequestInfo(ctx); info != nil {
+		info.Set(providerName, h.registry.TypeFor(providerName))
+	}
 }
 
 func extractAPIKey(r *http.Request) string {
