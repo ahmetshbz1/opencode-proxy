@@ -1,6 +1,13 @@
-# Anthropic Proxy
+# Geçit
 
-Anthropic Messages API protokolünü destekleyen istemcileri (Claude Code, Cursor vb.) model bazlı provider kümelerine yönlendiren reverse proxy.
+Geçit, Claude Code ve benzeri Anthropic uyumlu istemcileri farklı provider kümelerine yönlendiren bir proxy katmanıdır.
+
+> Bu repo, upstream proxy tabanının fork’udur. Geçit odaklı kurulum ve kullanım akışı için [README.gecit.md](README.gecit.md) dosyasına gidin.
+
+## Bu repoda ne var?
+
+- **Geçit kullanımı**: Günlük kurulum, Claude Code entegrasyonu ve önerilen akışlar için [README.gecit.md](README.gecit.md)
+- **Proxy çekirdeği**: Bu README içinde yer alan teknik mimari, provider routing ve operasyon detayları
 
 ## Mimari
 
