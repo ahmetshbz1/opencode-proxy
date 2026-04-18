@@ -102,7 +102,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/messages", proxy.NewHandler(registry, logger))
 	mux.Handle("POST /v1/messages/", proxy.NewHandler(registry, logger))
+	mux.Handle("POST /v1/messages/count_tokens", proxy.NewHandler(registry, logger))
+	mux.Handle("POST /v1/messages/count_tokens/", proxy.NewHandler(registry, logger))
 	mux.Handle("GET /health", proxy.NewHealthHandler(mgr, registry))
+	mux.Handle("GET /ready", proxy.NewReadinessHandler(mgr, registry))
 
 	handler := middleware.Chain(mux,
 		middleware.Recovery(logger),

@@ -16,10 +16,10 @@ import (
 )
 
 type mockProvider struct {
-	name      string
-	priority  int
-	err       error
-	calls     *int
+	name       string
+	priority   int
+	err        error
+	calls      *int
 	statusCode int
 }
 
@@ -80,6 +80,45 @@ func TestHandlerInvalidBody(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsEmptyModel(t *testing.T) {
+	h := newTestHandler(nil)
+
+	body, _ := json.Marshal(anthropic.Request{Model: "", MaxTokens: 100, Messages: []anthropic.Message{{Role: "user", Content: json.RawMessage(`"merhaba"`)}}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandlerRejectsEmptyMessages(t *testing.T) {
+	h := newTestHandler(nil)
+
+	body, _ := json.Marshal(anthropic.Request{Model: "gpt-5.4", MaxTokens: 100, Messages: nil})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandlerRejectsMissingMaxTokensOutsideCountTokens(t *testing.T) {
+	h := newTestHandler(nil)
+
+	body, _ := json.Marshal(anthropic.Request{Model: "gpt-5.4", Messages: []anthropic.Message{{Role: "user", Content: json.RawMessage(`"merhaba"`)}}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
 func TestHandlerAllProvidersFail(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	registry := provider.NewRegistry(http.DefaultClient, logger)
@@ -87,7 +126,7 @@ func TestHandlerAllProvidersFail(t *testing.T) {
 
 	h := NewHandler(registry, logger)
 
-	body, _ := json.Marshal(anthropic.Request{Model: "test", MaxTokens: 100})
+	body, _ := json.Marshal(anthropic.Request{Model: "test", MaxTokens: 100, Messages: []anthropic.Message{{Role: "user", Content: json.RawMessage(`"merhaba"`)}}})
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -120,7 +159,7 @@ func TestHandlerSkipsCatchAllForExplicitModel(t *testing.T) {
 		{Name: "catch-all", Type: "anthropic", BaseURL: catchAll.URL, APIKey: "k", Priority: 0},
 	})
 
-	body, _ := json.Marshal(anthropic.Request{Model: "gpt-5.4", MaxTokens: 100})
+	body, _ := json.Marshal(anthropic.Request{Model: "gpt-5.4", MaxTokens: 100, Messages: []anthropic.Message{{Role: "user", Content: json.RawMessage(`"merhaba"`)}}})
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -159,7 +198,7 @@ func TestHandlerCountTokensSkipsCatchAllForExplicitModel(t *testing.T) {
 		{Name: "catch-all", Type: "anthropic", BaseURL: catchAll.URL, APIKey: "k", Priority: 0},
 	})
 
-	body, _ := json.Marshal(anthropic.Request{Model: "gpt-5.4", MaxTokens: 100})
+	body, _ := json.Marshal(anthropic.Request{Model: "gpt-5.4", MaxTokens: 100, Messages: []anthropic.Message{{Role: "user", Content: json.RawMessage(`"merhaba"`)}}})
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -207,7 +246,7 @@ func TestHandlerRoutesGLMOnlyWithinGLMProviders(t *testing.T) {
 		{Name: "codex-oauth", Type: "anthropic", BaseURL: codex.URL, APIKey: "k", Priority: 0, Models: []string{"gpt-5.4", "gpt-5.4-*"}},
 	})
 
-	body, _ := json.Marshal(anthropic.Request{Model: "glm-5.1", MaxTokens: 100})
+	body, _ := json.Marshal(anthropic.Request{Model: "glm-5.1", MaxTokens: 100, Messages: []anthropic.Message{{Role: "user", Content: json.RawMessage(`"merhaba"`)}}})
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)

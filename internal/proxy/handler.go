@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,13 @@ type Handler struct {
 	logger   *slog.Logger
 }
 
+type requestContext struct {
+	body         []byte
+	request      anthropic.Request
+	apiKey       string
+	isTokenCount bool
+}
+
 func NewHandler(registry *provider.Registry, logger *slog.Logger) *Handler {
 	return &Handler{registry: registry, logger: logger}
 }
@@ -28,34 +36,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	reqCtx, err := h.parseRequest(r)
 	if err != nil {
-		sse.WriteError(w, http.StatusInternalServerError, "isteğin okunması başarısız: "+err.Error())
-		return
-	}
-
-	var antReq anthropic.Request
-	if err := json.Unmarshal(body, &antReq); err != nil {
-		sse.WriteError(w, http.StatusBadRequest, "geçersiz istek: "+err.Error())
-		return
-	}
-
-	// API anahtarını istek başlıklarından al ve passthrough provider'lar için context'e ekle.
-	apiKey := r.Header.Get("x-api-key")
-	if apiKey == "" {
-		apiKey = r.Header.Get("X-Api-Key")
-	}
-	if apiKey == "" {
-		apiKey = r.Header.Get("Authorization")
-		// Varsa "Bearer " önekini kaldır.
-		if len(apiKey) > 7 && strings.HasPrefix(strings.ToLower(apiKey), "bearer ") {
-			apiKey = apiKey[7:]
+		status := http.StatusBadRequest
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			status = http.StatusBadRequest
 		}
+		if strings.HasPrefix(err.Error(), "isteğin okunması başarısız") {
+			status = http.StatusInternalServerError
+		}
+		sse.WriteError(w, status, err.Error())
+		return
 	}
-	ctx := provider.WithAPIKey(r.Context(), apiKey)
 
+	ctx := provider.WithAPIKey(r.Context(), reqCtx.apiKey)
+	body := reqCtx.body
+	antReq := reqCtx.request
+	isTokenCount := reqCtx.isTokenCount
 	reqID := middleware.GetRequestID(ctx)
-	isTokenCount := strings.HasSuffix(r.URL.Path, "/count_tokens")
 	active := h.registry.Active()
 
 	// Token sayma — sadece ilk uygun provider, retry yok
@@ -163,4 +161,53 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		sse.WriteError(w, http.StatusBadGateway, "yapılandırılmış sağlayıcı yok (model: "+antReq.Model+")")
 	}
+}
+
+func (h *Handler) parseRequest(r *http.Request) (*requestContext, error) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, errors.New("isteğin okunması başarısız: " + err.Error())
+	}
+
+	var antReq anthropic.Request
+	if err := json.Unmarshal(body, &antReq); err != nil {
+		return nil, errors.New("geçersiz istek: " + err.Error())
+	}
+	if err := validateRequest(antReq, strings.HasSuffix(r.URL.Path, "/count_tokens")); err != nil {
+		return nil, err
+	}
+
+	return &requestContext{
+		body:         body,
+		request:      antReq,
+		apiKey:       extractAPIKey(r),
+		isTokenCount: strings.HasSuffix(r.URL.Path, "/count_tokens"),
+	}, nil
+}
+
+func extractAPIKey(r *http.Request) string {
+	apiKey := r.Header.Get("x-api-key")
+	if apiKey == "" {
+		apiKey = r.Header.Get("X-Api-Key")
+	}
+	if apiKey == "" {
+		apiKey = r.Header.Get("Authorization")
+		if len(apiKey) > 7 && strings.HasPrefix(strings.ToLower(apiKey), "bearer ") {
+			apiKey = apiKey[7:]
+		}
+	}
+	return apiKey
+}
+
+func validateRequest(req anthropic.Request, isTokenCount bool) error {
+	if strings.TrimSpace(req.Model) == "" {
+		return errors.New("geçersiz istek: model boş olamaz")
+	}
+	if len(req.Messages) == 0 {
+		return errors.New("geçersiz istek: messages boş olamaz")
+	}
+	if !isTokenCount && req.MaxTokens <= 0 {
+		return errors.New("geçersiz istek: max_tokens sıfırdan büyük olmalı")
+	}
+	return nil
 }

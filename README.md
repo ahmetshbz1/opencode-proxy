@@ -142,6 +142,7 @@ Bu kurulumda Opus çağrıları Claude/Anthropic aboneliği üzerinden `anthropi
 
 ```bash
 curl http://localhost:8787/health
+curl http://localhost:8787/ready
 ```
 
 `/health` yanıtı artık yalnız `status` değil, `port`, `provider_count` ve her provider için aşağıdaki operasyonel alanları da döner:
