@@ -113,6 +113,21 @@ func TestValidate(t *testing.T) {
 			modify:  func(c *Config) { c.Providers[0].APIKey = "" },
 			wantErr: true,
 		},
+		{
+			name:    "aynı provider adı iki kez kullanılamaz",
+			modify:  func(c *Config) { c.Providers = append(c.Providers, c.Providers[0]) },
+			wantErr: true,
+		},
+		{
+			name:    "geçersiz base_url şeması",
+			modify:  func(c *Config) { c.Providers[0].BaseURL = "ftp://api.test.com" },
+			wantErr: true,
+		},
+		{
+			name:    "geçersiz base_url biçimi",
+			modify:  func(c *Config) { c.Providers[0].BaseURL = "://bad-url" },
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

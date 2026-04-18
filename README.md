@@ -144,6 +144,14 @@ Bu kurulumda Opus çağrıları Claude/Anthropic aboneliği üzerinden `anthropi
 curl http://localhost:8787/health
 ```
 
+`/health` yanıtı artık yalnız `status` değil, `port`, `provider_count` ve her provider için aşağıdaki operasyonel alanları da döner:
+
+- `models`
+- `api_key_configured`
+- `oauth_configured`
+- `incoming_api_key_required`
+- `exhausted`
+
 ## Make Komutları
 
 | Komut | Açıklama |

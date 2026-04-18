@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,21 +44,36 @@ func (c *Config) Validate() error {
 	if len(c.Providers) == 0 {
 		return fmt.Errorf("en az bir sağlayıcı tanımlanmalı")
 	}
+
+	seenNames := make(map[string]struct{}, len(c.Providers))
 	for i, p := range c.Providers {
-		if p.Name == "" {
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
 			return fmt.Errorf("sağlayıcı %d: isim boş olamaz", i)
 		}
+		if _, exists := seenNames[name]; exists {
+			return fmt.Errorf("sağlayıcı %d (%s): isim benzersiz olmalı", i, name)
+		}
+		seenNames[name] = struct{}{}
 		if p.Type != "anthropic" && p.Type != "openai" && p.Type != "codex" && p.Type != "anthropic_passthrough" {
-			return fmt.Errorf("sağlayıcı %d (%s): bilinmeyen tip %q", i, p.Name, p.Type)
+			return fmt.Errorf("sağlayıcı %d (%s): bilinmeyen tip %q", i, name, p.Type)
 		}
-		if p.BaseURL == "" {
-			return fmt.Errorf("sağlayıcı %d (%s): base_url boş olamaz", i, p.Name)
+		baseURL := strings.TrimSpace(p.BaseURL)
+		if baseURL == "" {
+			return fmt.Errorf("sağlayıcı %d (%s): base_url boş olamaz", i, name)
 		}
-		if p.requiresAPIKey() && p.APIKey == "" {
-			return fmt.Errorf("sağlayıcı %d (%s): api_key boş olamaz", i, p.Name)
+		parsed, err := url.Parse(baseURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return fmt.Errorf("sağlayıcı %d (%s): base_url geçerli bir http/https adresi olmalı", i, name)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("sağlayıcı %d (%s): base_url yalnız http/https olabilir", i, name)
+		}
+		if p.requiresAPIKey() && strings.TrimSpace(p.APIKey) == "" {
+			return fmt.Errorf("sağlayıcı %d (%s): api_key boş olamaz", i, name)
 		}
 		if p.Type == "codex" && !p.hasCodexCredentials() {
-			return fmt.Errorf("sağlayıcı %d (%s): codex için api_key veya oauth access/refresh token gerekli", i, p.Name)
+			return fmt.Errorf("sağlayıcı %d (%s): codex için api_key veya oauth access/refresh token gerekli", i, name)
 		}
 	}
 	return nil
