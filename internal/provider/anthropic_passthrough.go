@@ -13,15 +13,15 @@ import (
 	"opencode-proxy/internal/middleware"
 )
 
-// Context key for API key
+// apiKeyContextKey, context içinde API anahtarını taşır.
 type apiKeyContextKey struct{}
 
-// WithAPIKey adds the API key to the context
+// WithAPIKey, API anahtarını context'e ekler.
 func WithAPIKey(ctx context.Context, apiKey string) context.Context {
 	return context.WithValue(ctx, apiKeyContextKey{}, apiKey)
 }
 
-// GetAPIKey retrieves the API key from the context
+// GetAPIKey, API anahtarını context'ten çeker.
 func GetAPIKey(ctx context.Context) string {
 	if apiKey, ok := ctx.Value(apiKeyContextKey{}).(string); ok {
 		return apiKey
@@ -58,18 +58,18 @@ func (p *AnthropicPassthroughProvider) Proxy(ctx context.Context, w http.Respons
 	endpoint := resolveEndpoint(p.baseURL)
 	reqID := middleware.GetRequestID(ctx)
 
-	// Get API key from context (passed from original request)
+	// API anahtarını özgün istekten taşınan context içinden al.
 	apiKey := GetAPIKey(ctx)
 	if apiKey == "" {
-		return &ProxyError{ProviderName: p.name, Message: "API key not found in request", Retryable: false}
+		return &ProxyError{ProviderName: p.name, Message: "istekte API anahtarı bulunamadı", Retryable: false}
 	}
 
-	// Filter out context_management field which is not supported in subscription API
-	// Also add max_tokens if missing (required by consumer API)
+	// Subscription API'nin desteklemediği context_management alanını çıkar.
+	// Yoksa consumer API için zorunlu olan max_tokens alanını ekle.
 	var reqMap map[string]interface{}
 	if err := json.Unmarshal(body, &reqMap); err == nil {
 		delete(reqMap, "context_management")
-		// Consumer API requires max_tokens even for count_tokens
+		// count_tokens dahil consumer API her zaman max_tokens bekler.
 		if _, hasMaxTokens := reqMap["max_tokens"]; !hasMaxTokens {
 			reqMap["max_tokens"] = 1
 		}

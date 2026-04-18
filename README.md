@@ -5,19 +5,21 @@ Anthropic Messages API protokolünü destekleyen istemcileri (Claude Code, Curso
 ## Mimari
 
 ```text
-Claude Code ──► localhost:8787 ──► glm-5.1  ──► z.ai / opencode-go
-                              └──► gpt-5.4 ──► codex-oauth
+Claude Code ──► localhost:8787 ──► claude-opus-* ──► anthropic_passthrough
+                              ├──► gpt-5.4      ──► codex-oauth
+                              └──► glm-5.1      ──► z.ai / opencode-go
 ```
 
 - Routing model bazlı çalışır
-- `glm-5.1` ve `glm-*` yalnız glm provider kümesine gider
+- `claude-opus-*` istekleri yalnız `anthropic_passthrough` kümesine gider
 - `gpt-5.4` ve `gpt-5.4-*` yalnız codex provider kümesine gider
+- `glm-5.1` ve `glm-*` yalnız glm provider kümesine gider
 - Farklı model kümeleri birbirine fallback yapmaz
 - Aynı model kümesi içinde failover, runtime hata / limit durumuna göre çalışır
 - `priority` artık karar verici değildir; config sırası + cooldown durumu kullanılır
 - `config.json` dosyasından sıcak yeniden yükleme yapılır
-- Structured logging (`slog`)
-- Request ID tracing
+- Yapısal loglama (`slog`)
+- Request ID izleme
 - Panic recovery middleware
 
 ## Hızlı Başlangıç
@@ -37,16 +39,16 @@ Claude Code `settings.json`:
 ```json
 {
   "env": {
-    "ANTHROPIC_API_KEY": "fake_key_for_local_testing",
+    "ANTHROPIC_API_KEY": "fake_key",
     "ANTHROPIC_BASE_URL": "http://localhost:8787",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5.4",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-7",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.4"
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5.4"
   }
 }
 ```
 
-Modeli `glm-5.1` yaparsan glm kümesine, `gpt-5.4` yaparsan codex kümesine gidersin.
+Bu kurulumda Opus çağrıları Claude/Anthropic aboneliği üzerinden `anthropic_passthrough` provider'ına gider. Sonnet ve Haiku slotları aynı anda `gpt-5.4` için kullanılabilir.
 
 ## Yapılandırma
 
@@ -56,6 +58,14 @@ Modeli `glm-5.1` yaparsan glm kümesine, `gpt-5.4` yaparsan codex kümesine gide
 {
   "port": 8787,
   "providers": [
+    {
+      "name": "claude-native",
+      "type": "anthropic_passthrough",
+      "base_url": "https://api.anthropic.com",
+      "api_key": "",
+      "models": ["claude-opus-*"],
+      "priority": 0
+    },
     {
       "name": "z.ai",
       "type": "anthropic",
@@ -101,10 +111,11 @@ Modeli `glm-5.1` yaparsan glm kümesine, `gpt-5.4` yaparsan codex kümesine gide
 
 ### Claude Code Native Abonelik ile Kullanım
 
-`anthropic_passthrough` tipi, Claude Code'un kendi API key'ini kullanarak gerçek Anthropic API'ye yönlendirme yapar. Bu sayede:
+`anthropic_passthrough` tipi, Claude Code'un istekte taşıdığı Anthropic kimliğini gerçek Anthropic API'ye iletir. Bu sayede:
 
-- **Opus** modeli için Claude Code aboneliğinden kullanım
-- **Sonnet/Haiku** modelleri için proxy üzerinden alternatif provider kullanımı
+- **Opus 4.7** doğrudan Claude/Anthropic aboneliğinden kullanılabilir
+- **Sonnet** ve **Haiku** slotları proxy üstünden `gpt-5.4` modeline yönlendirilebilir
+- Claude Code içindeki yerleşik `WebSearch` ve `WebFetch` araçları da aynı `ANTHROPIC_BASE_URL` üstünden çalışır; proxy içinde ayrı HTTP tool endpoint'i veya MCP server gerektirmez
 
 **Örnek config:**
 
@@ -114,53 +125,18 @@ Modeli `glm-5.1` yaparsan glm kümesine, `gpt-5.4` yaparsan codex kümesine gide
   "type": "anthropic_passthrough",
   "base_url": "https://api.anthropic.com",
   "api_key": "",
-  "models": ["claude-opus-4-7"]
-}
-```
-
-Claude Code `settings.json`:
-
-```json
-{
-  "env": {
-    "ANTHROPIC_API_KEY": "fake_key",
-    "ANTHROPIC_BASE_URL": "http://localhost:8787",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-20250514",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5.4"
-  }
+  "models": ["claude-opus-*"]
 }
 ```
 
 ## Routing Kuralları
 
 - Bir model için explicit `models` eşleşmesi varsa yalnız o küme kullanılır.
-- `glm-5.1` / `glm-*` istekleri yalnız `z.ai` ve `opencode-go` provider'larına gider.
+- `claude-opus-*` istekleri yalnız `claude-native` gibi `anthropic_passthrough` provider'larına gider.
 - `gpt-5.4` / `gpt-5.4-*` istekleri yalnız `codex-oauth` provider'ına gider.
+- `glm-5.1` / `glm-*` istekleri yalnız `z.ai` ve `opencode-go` provider'larına gider.
 - Aynı model kümesinde ilk provider limitteyse veya hata verirse diğer uygun provider denenir.
 - Model kümesi dışına geçiş yapılmaz.
-
-## Web Araçları
-
-Proxy, dahili web araçları sunar.
-
-```bash
-curl "http://localhost:8787/v1/tools/web_fetch?url=https://example.com"
-curl "http://localhost:8787/v1/tools/web_search?q=go+programming"
-```
-
-## MCP Server
-
-```json
-{
-  "mcpServers": {
-    "opencode-proxy": {
-      "command": "/tam/yol/opencode-proxy",
-      "args": ["mcp"]
-    }
-  }
-}
-```
 
 ## Sağlık Kontrolü
 

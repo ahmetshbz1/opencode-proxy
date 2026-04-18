@@ -40,14 +40,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract API key from request header and add to context for passthrough providers
+	// API anahtarını istek başlıklarından al ve passthrough provider'lar için context'e ekle.
 	apiKey := r.Header.Get("x-api-key")
 	if apiKey == "" {
 		apiKey = r.Header.Get("X-Api-Key")
 	}
 	if apiKey == "" {
 		apiKey = r.Header.Get("Authorization")
-		// Remove "Bearer " prefix if present
+		// Varsa "Bearer " önekini kaldır.
 		if len(apiKey) > 7 && strings.HasPrefix(strings.ToLower(apiKey), "bearer ") {
 			apiKey = apiKey[7:]
 		}

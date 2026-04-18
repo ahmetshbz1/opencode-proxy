@@ -15,11 +15,9 @@ import (
 	"github.com/lmittmann/tint"
 	"opencode-proxy/internal/auth"
 	"opencode-proxy/internal/config"
-	"opencode-proxy/internal/mcp"
 	"opencode-proxy/internal/middleware"
 	"opencode-proxy/internal/provider"
 	"opencode-proxy/internal/proxy"
-	"opencode-proxy/internal/webtools"
 )
 
 var runAuthCommand = func(ctx context.Context, args []string) error {
@@ -48,25 +46,9 @@ func main() {
 	os.Exit(run(context.Background(), os.Args, os.Stdout, os.Stderr))
 }
 
-func runMCP() {
-	logger := newLogger(os.Stderr)
-
-	fetcher := webtools.NewFetcher(logger)
-	searcher := webtools.NewSearcher(logger)
-
-	srv := mcp.NewServer(fetcher, searcher, logger)
-	if err := srv.Run(); err != nil {
-		logger.Error("MCP server hatası", slog.String("error", err.Error()))
-		os.Exit(1)
-	}
-}
-
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) > 1 {
 		switch args[1] {
-		case "mcp":
-			runMCP()
-			return 0
 		case "auth":
 			if err := runAuthCommand(ctx, args[2:]); err != nil {
 				fmt.Fprintln(stderr, err.Error())
@@ -121,13 +103,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	mux.Handle("POST /v1/messages", proxy.NewHandler(registry, logger))
 	mux.Handle("POST /v1/messages/", proxy.NewHandler(registry, logger))
 	mux.Handle("GET /health", proxy.NewHealthHandler(mgr))
-
-	fetcher := webtools.NewFetcher(logger)
-	searcher := webtools.NewSearcher(logger)
-	mux.Handle("/v1/tools/web_fetch", webtools.HandleFetch(fetcher, logger))
-	mux.Handle("/v1/tools/web_fetch/", webtools.HandleFetch(fetcher, logger))
-	mux.Handle("/v1/tools/web_search", webtools.HandleSearch(searcher, logger))
-	mux.Handle("/v1/tools/web_search/", webtools.HandleSearch(searcher, logger))
 
 	handler := middleware.Chain(mux,
 		middleware.Recovery(logger),
