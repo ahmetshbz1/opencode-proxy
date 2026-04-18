@@ -81,7 +81,7 @@ func IsQuotaError(err error) bool {
 	if !ok {
 		return false
 	}
-	// HTTP durum kodları: 429 (rate limit), 402 (payment required)
+	// HTTP durum kodları: 429 (istek limiti), 402 (ödeme gerekli)
 	if pe.StatusCode == 429 || pe.StatusCode == 402 {
 		return true
 	}

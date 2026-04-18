@@ -8,7 +8,7 @@ import (
 	"opencode-proxy/internal/openai"
 )
 
-// ToOpenAI, Anthropic formatındaki isteği OpenAI formatına dönüştürür.
+// ToOpenAI, Anthropic isteğini OpenAI biçimine dönüştürür.
 func ToOpenAI(req anthropic.Request) openai.Request {
 	chatTemplateKwargs := mergeChatTemplateKwargs(req)
 

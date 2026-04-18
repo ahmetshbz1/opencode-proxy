@@ -11,8 +11,8 @@ import (
 type requestIDKey struct{}
 type requestInfoKey struct{}
 
-// RequestInfo, istek süresince mutasyona açık paylaşımlı bilgi taşır.
-// Handler seçtiği provider'ı buraya yazar, logging middleware okur.
+// RequestInfo, istek süresince paylaşılan ve güncellenebilir bilgi taşır.
+// Handler seçtiği sağlayıcıyı buraya yazar, logging middleware buradan okur.
 type RequestInfo struct {
 	mu       sync.Mutex
 	provider string
@@ -32,7 +32,7 @@ func (i *RequestInfo) Get() (string, string) {
 	return i.provider, i.cluster
 }
 
-// generateID, kriptografik olarak güvenli bir istek ID'si üretir.
+// generateID, kriptografik olarak güvenli bir istek kimliği üretir.
 func generateID() string {
 	var buf [8]byte
 	_, _ = rand.Read(buf[:])
@@ -53,7 +53,7 @@ func RequestID(next http.Handler) http.Handler {
 	})
 }
 
-// GetRequestID, context'ten istek ID'sini çeker.
+// GetRequestID, context'ten istek kimliğini çeker.
 func GetRequestID(ctx context.Context) string {
 	if id, ok := ctx.Value(requestIDKey{}).(string); ok {
 		return id
