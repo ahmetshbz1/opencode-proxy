@@ -149,7 +149,20 @@ func (c *Config) Save(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("config dizini oluşturulamadı: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	tmpFile, err := os.CreateTemp(filepath.Dir(path), ".config-*.json")
+	if err != nil {
+		return fmt.Errorf("geçici config dosyası oluşturulamadı: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("geçici config dosyasına yazılamadı: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("geçici config dosyası kapatılamadı: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("config kaydedilemedi: %w", err)
 	}
 	return nil
@@ -195,6 +208,8 @@ func (m *Manager) Get() *Config {
 }
 
 func (m *Manager) OnChange(fn func(*Config)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.onChange = fn
 }
 
@@ -225,10 +240,11 @@ func (m *Manager) Watch() {
 				}
 				m.mu.Lock()
 				m.config = cfg
+				onChange := m.onChange
 				m.mu.Unlock()
 				m.logger.Info("config yeniden yüklendi")
-				if m.onChange != nil {
-					m.onChange(cfg)
+				if onChange != nil {
+					onChange(cfg)
 				}
 			}
 		}
@@ -261,6 +277,10 @@ func (m *Manager) UpdateProviderOAuth(name string, oauth OAuthConfig) error {
 	if err := cfgCopy.Save(m.configPath); err != nil {
 		return err
 	}
+	onChange := m.onChange
 	m.config = &cfgCopy
+	if onChange != nil {
+		onChange(&cfgCopy)
+	}
 	return nil
 }

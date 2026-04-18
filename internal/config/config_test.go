@@ -216,6 +216,14 @@ func TestManagerUpdateProviderOAuthPersistsTokens(t *testing.T) {
 	}
 	defer mgr.Close()
 
+	called := 0
+	mgr.OnChange(func(updated *Config) {
+		called++
+		if updated.Providers[0].OAuth == nil || updated.Providers[0].OAuth.RefreshToken != "new-refresh" {
+			t.Fatalf("callback oauth = %+v", updated.Providers[0].OAuth)
+		}
+	})
+
 	err = mgr.UpdateProviderOAuth("codex-oauth", OAuthConfig{
 		AccessToken:  "new-access",
 		RefreshToken: "new-refresh",
@@ -232,5 +240,8 @@ func TestManagerUpdateProviderOAuthPersistsTokens(t *testing.T) {
 	got := loaded.Providers[0].OAuth
 	if got == nil || got.RefreshToken != "new-refresh" || got.AccessToken != "new-access" {
 		t.Fatalf("persisted oauth = %+v", got)
+	}
+	if called != 1 {
+		t.Fatalf("onChange çağrı sayısı = %d, want 1", called)
 	}
 }

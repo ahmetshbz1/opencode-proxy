@@ -253,3 +253,18 @@ func TestRegistryOrderedForModelFallsBackToCatchAllWithoutExplicitMatch(t *testi
 		t.Fatalf("ikinci provider = %q, want catch-all-anthropic", got[1].Name())
 	}
 }
+
+func TestRegistryOrderedForModelTrimsWhitespace(t *testing.T) {
+	registry := NewRegistry(http.DefaultClient, newTestLogger())
+	registry.RebuildFromConfig([]config.Provider{
+		{Name: "codex", Type: "codex", BaseURL: "http://codex", Priority: 0, OAuth: &config.OAuthConfig{RefreshToken: "r"}, Models: []string{"gpt-5.4", "gpt-5.4-*"}},
+	})
+
+	got := registry.OrderedForModel("  gpt-5.4  ")
+	if len(got) != 1 {
+		t.Fatalf("providers = %d, want 1", len(got))
+	}
+	if got[0].Name() != "codex" {
+		t.Fatalf("ilk provider = %q, want codex", got[0].Name())
+	}
+}
