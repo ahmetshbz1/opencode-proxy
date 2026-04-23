@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -74,6 +75,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	httpClient := provider.DefaultHTTPClient()
 	registry := provider.NewRegistry(httpClient, logger)
+	stateFile := trackerStatePath(configFile)
+	if err := registry.Active().Load(stateFile, time.Now()); err != nil {
+		logger.Warn("provider state yüklenemedi", slog.String("error", err.Error()))
+	}
 	registry.SetOAuthPersister(mgr.UpdateProviderOAuth)
 	registry.RebuildFromConfig(mgr.Get().Providers)
 
@@ -104,7 +109,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	mux.Handle("POST /v1/messages/", proxy.NewHandler(registry, logger))
 	mux.Handle("POST /v1/messages/count_tokens", proxy.NewHandler(registry, logger))
 	mux.Handle("POST /v1/messages/count_tokens/", proxy.NewHandler(registry, logger))
-	mux.Handle("GET /health", proxy.NewHealthHandler(mgr, registry))
+	healthHandler := proxy.NewHealthHandler(mgr, registry)
+	mux.Handle("GET /health", healthHandler)
+	mux.Handle("GET /health/", healthHandler)
+	mux.Handle("GET /health.json", healthHandler)
 	mux.Handle("GET /ready", proxy.NewReadinessHandler(mgr, registry))
 
 	handler := middleware.Chain(mux,
@@ -137,6 +145,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	if err := registry.Active().Save(stateFile); err != nil {
+		logger.Warn("provider state kaydedilemedi", slog.String("error", err.Error()))
+	}
 	mgr.Close()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("düzgün kapatma başarısız", slog.String("error", err.Error()))
@@ -145,6 +156,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	logger.Info("sunucu düzgün şekilde kapatıldı")
 	return 0
+}
+
+func trackerStatePath(configPath string) string {
+	dir := filepath.Dir(configPath)
+	base := filepath.Base(configPath)
+	return filepath.Join(dir, "."+base+".state.json")
 }
 
 func parseRunFlags(args []string) (string, error) {
