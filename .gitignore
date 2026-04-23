@@ -22,3 +22,4 @@ health-ui/dist/
 
 # Hassas bilgi — API anahtarları burada
 config.json
+.config.json.state.json
