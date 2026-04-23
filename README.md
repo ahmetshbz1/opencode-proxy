@@ -182,6 +182,33 @@ Auth sonrası config'e otomatik olarak şu model pattern'leri eklenir:
 
 Bu sayede yeni eklenen provider routing için hemen kullanılabilir hale gelir.
 
+## Son Güncellemeler
+
+Son 6 commit ile projeye eklenen ve güncellenen başlıca alanlar:
+
+### Eklenenler
+
+- React tabanlı `/health` dashboard eklendi; proxy sağlık durumu artık tarayıcıdan zengin arayüzle izlenebilir.
+- Dashboard için Vite/Bun tabanlı ayrı `health-ui` uygulaması ve build çıktılarının Go binary içine gömülmesi eklendi.
+- Provider sağlık verileri için `models`, credential durumu, OAuth yapılandırması ve exhausted state gibi operasyonel alanlar arayüzde görünür hale getirildi.
+- Codex provider için usage verisine dayalı limit algılama ve test kapsamı eklendi.
+- Usage cache ve anlık provider state kaydı eklendi; limit/cooldown kararları daha tutarlı hale getirildi.
+
+### Güncellenenler
+
+- Health dashboard arayüzü koyu tema, kart yapısı, badge/button bileşenleri ve daha rafine spacing ile yenilendi.
+- İlk yükleme deneyimi skeleton ekranla iyileştirildi; veri gelmeden önce boş veya sıçrayan UI görünümü azaltıldı.
+- Dashboard aksiyon butonlarına basılma animasyonu eklendi.
+- Provider cooldown mantığı Codex usage bilgisiyle güçlendirildi; limit durumunda provider seçimi daha doğru çalışacak şekilde güncellendi.
+- Proxy handler ve middleware testleri Codex limit/usage senaryolarını kapsayacak şekilde genişletildi.
+
+### Değiştirilenler
+
+- `/health` endpoint'i yalnız JSON sağlık kontrolü olmaktan çıkıp gömülü React dashboard servis edecek şekilde genişletildi.
+- Makefile, health UI build sürecini destekleyecek şekilde güncellendi.
+- Health dashboard statik asset dosyaları her UI build sonrası güncel hash'lerle yenilendi.
+- `.gitignore`, health UI ve build çıktılarıyla uyumlu olacak şekilde düzenlendi.
+
 ## Make Komutları
 
 | Komut | Açıklama |
