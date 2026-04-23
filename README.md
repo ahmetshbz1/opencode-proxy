@@ -153,6 +153,35 @@ curl http://localhost:8787/ready
 - `incoming_api_key_required`
 - `exhausted`
 
+## Codex OAuth Kimlik Doğrulama
+
+Codex provider'ları için OAuth-based otomatik kurulum:
+
+```bash
+# İlk Codex hesabı (isim belirtilmezse varsayılan: codex-oauth)
+./opencode-proxy auth
+
+# İsimli hesap ekleme (birden fazla hesap için)
+./opencode-proxy auth --name account-1
+./opencode-proxy auth --name account-2
+
+# Mevcut bir hesabı yenileme
+./opencode-proxy auth --name account-1
+```
+
+| Parametre | Varsayılan | Açıklama |
+|-----------|-----------|-----------|
+| `--config` | `config.json` | Yapılandırma dosyası yolu |
+| `--name` | `codex-oauth` | Sağlayıcı adı. Aynı isimde kayıt varsa OAuth token'ı yenilenir. Farklı isimlerle birden fazla Codex hesabı eklenebilir. |
+| `--base-url` | `https://chatgpt.com/backend-api/codex` | Codex backend URL'si |
+| `--no-browser` | `false` | Tarayıcı otomatik açılmasını engeller; manuel cihaz kodu girişi yapılır |
+
+Auth sonrası config'e otomatik olarak şu model pattern'leri eklenir:
+- `gpt-5.4`
+- `gpt-5.4-*`
+
+Bu sayede yeni eklenen provider routing için hemen kullanılabilir hale gelir.
+
 ## Make Komutları
 
 | Komut | Açıklama |

@@ -189,6 +189,7 @@ func persistCodexAuth(opts CodexAuthOptions, oauthCfg *config.OAuthConfig) error
 		Type:     "codex",
 		BaseURL:  opts.BaseURL,
 		OAuth:    oauthCfg,
+		Models:   []string{"gpt-5.4", "gpt-5.4-*"},
 		Priority: nextPriority(cfg, providerName),
 	})
 
