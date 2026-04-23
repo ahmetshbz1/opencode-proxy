@@ -79,6 +79,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err := registry.Active().Load(stateFile, time.Now()); err != nil {
 		logger.Warn("provider state yüklenemedi", slog.String("error", err.Error()))
 	}
+	registry.Active().SetChangeHandler(func() {
+		if err := registry.Active().Save(stateFile); err != nil {
+			logger.Warn("provider state kaydedilemedi", slog.String("error", err.Error()))
+		}
+	})
 	registry.SetOAuthPersister(mgr.UpdateProviderOAuth)
 	registry.RebuildFromConfig(mgr.Get().Providers)
 

@@ -30,6 +30,7 @@ type ActiveTracker struct {
 	mu        sync.RWMutex
 	exhausted map[string]time.Time // provider adı → ne zaman tükenildi
 	current   map[string]string    // model → aktif provider adı
+	onChange  func()
 }
 
 func NewActiveTracker() *ActiveTracker {
@@ -60,20 +61,29 @@ func (t *ActiveTracker) MarkExhausted(name string) {
 
 func (t *ActiveTracker) MarkExhaustedUntil(name string, until time.Time) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.exhausted[name] = until
+	onChange := t.onChange
+	t.mu.Unlock()
+	notifyTrackerChange(onChange)
 }
 
 func (t *ActiveTracker) ClearExhausted(name string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	_, existed := t.exhausted[name]
 	delete(t.exhausted, name)
+	onChange := t.onChange
+	t.mu.Unlock()
+	if existed {
+		notifyTrackerChange(onChange)
+	}
 }
 
 func (t *ActiveTracker) ResetAll() {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.exhausted = make(map[string]time.Time)
+	onChange := t.onChange
+	t.mu.Unlock()
+	notifyTrackerChange(onChange)
 }
 
 func (t *ActiveTracker) Current(model string) string {
@@ -84,16 +94,26 @@ func (t *ActiveTracker) Current(model string) string {
 
 func (t *ActiveTracker) SetCurrent(model, name string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	if t.current[model] == name {
+		t.mu.Unlock()
+		return
+	}
 	t.current[model] = name
+	onChange := t.onChange
+	t.mu.Unlock()
+	notifyTrackerChange(onChange)
 }
 
 func (t *ActiveTracker) ClearCurrent(model, name string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.current[model] == name {
-		delete(t.current, model)
+	if t.current[model] != name {
+		t.mu.Unlock()
+		return
 	}
+	delete(t.current, model)
+	onChange := t.onChange
+	t.mu.Unlock()
+	notifyTrackerChange(onChange)
 }
 
 func (t *ActiveTracker) Save(path string) error {
@@ -114,6 +134,18 @@ func (t *ActiveTracker) Save(path string) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o600)
+}
+
+func (t *ActiveTracker) SetChangeHandler(fn func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onChange = fn
+}
+
+func notifyTrackerChange(fn func()) {
+	if fn != nil {
+		fn()
+	}
 }
 
 func (t *ActiveTracker) Load(path string, now time.Time) error {

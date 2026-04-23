@@ -126,6 +126,21 @@ func TestActiveTrackerMarkExhaustedUntil(t *testing.T) {
 	}
 }
 
+func TestActiveTrackerChangeHandlerRunsOnStateChange(t *testing.T) {
+	tracker := NewActiveTracker()
+	changes := 0
+	tracker.SetChangeHandler(func() { changes++ })
+
+	tracker.MarkExhaustedUntil("codex", time.Now().Add(time.Hour))
+	tracker.SetCurrent("gpt-5.4", "codex")
+	tracker.ClearCurrent("gpt-5.4", "codex")
+	tracker.ClearExhausted("codex")
+
+	if changes != 4 {
+		t.Fatalf("changes = %d, want 4", changes)
+	}
+}
+
 func TestOpenAINonStream(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer sk-test" {
@@ -188,6 +203,52 @@ func TestOpenAINonStream(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "düşünce") {
 		t.Fatalf("thinking içeriği yok: %s", w.Body.String())
+	}
+}
+
+func TestRegistryUsageCachesWithinTTL(t *testing.T) {
+	calls := 0
+	usageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"email":"cache@example.com",
+			"plan_type":"plus",
+			"rate_limit_reached_type":null,
+			"rate_limit":{
+				"allowed":true,
+				"limit_reached":false,
+				"primary_window":{"used_percent":10,"limit_window_seconds":18000,"reset_after_seconds":3600,"reset_at":1777017600},
+				"secondary_window":{"used_percent":20,"limit_window_seconds":604800,"reset_after_seconds":129552,"reset_at":1777449364}
+			}
+		}`))
+	}))
+	defer usageServer.Close()
+
+	registry := NewRegistry(usageServer.Client(), newTestLogger())
+	registry.RebuildFromConfig([]config.Provider{{
+		Name:    "codex",
+		Type:    "codex",
+		BaseURL: usageServer.URL + "/backend-api/codex",
+		OAuth: &config.OAuthConfig{
+			AccessToken: "access-token",
+			ExpiresAt:   time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}})
+
+	first, err := registry.Usage(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("ilk usage hatası: %v", err)
+	}
+	second, err := registry.Usage(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("ikinci usage hatası: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("usage endpoint çağrısı = %d, want 1", calls)
+	}
+	if first.Email != "cache@example.com" || second.Email != "cache@example.com" {
+		t.Fatalf("usage cache beklenen veriyi döndürmedi: %#v %#v", first, second)
 	}
 }
 

@@ -23,6 +23,7 @@ type UsageSnapshot = {
   primary_window?: UsageWindow
   secondary_window?: UsageWindow
   fetched_at: string
+  cache_age_seconds?: number
 }
 
 type ProviderHealth = {
@@ -166,7 +167,7 @@ function ProviderCard({ provider }: { provider: ProviderHealth }) {
       <CardHeader className="grid-cols-[1fr_auto]">
         <div>
           <CardTitle className="break-all text-2xl font-black tracking-tight">{provider.name}</CardTitle>
-          <CardDescription className="mt-1">{provider.type} · priority {provider.priority}{provider.usage?.email ? ` · ${provider.usage.email}` : ''}</CardDescription>
+          <CardDescription className="mt-1">{provider.type} · priority {provider.priority}{provider.usage?.email ? ` · ${provider.usage.email}` : ''}{provider.usage ? ` · usage ${formatCacheAge(provider.usage.cache_age_seconds)}` : ''}</CardDescription>
         </div>
         <Badge variant={limited ? 'destructive' : 'success'} size="lg">{limited ? 'limited' : 'ready'}</Badge>
       </CardHeader>
@@ -327,6 +328,13 @@ function formatDuration(seconds?: number): string {
   const minutes = Math.floor((seconds % 3600) / 60)
   if (hours > 0) return `${hours}s ${minutes}dk`
   return `${minutes}dk`
+}
+
+function formatCacheAge(seconds?: number): string {
+  if (seconds === undefined || seconds <= 0) return 'şimdi'
+  if (seconds < 60) return `${seconds}sn önce`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}dk önce`
 }
 
 export default App

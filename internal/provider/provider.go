@@ -36,14 +36,15 @@ type UsageProvider interface {
 }
 
 type UsageSnapshot struct {
-	Email              string       `json:"email,omitempty"`
-	PlanType           string       `json:"plan_type,omitempty"`
-	Allowed            bool         `json:"allowed"`
-	LimitReached       bool         `json:"limit_reached"`
-	RateLimitReached   string       `json:"rate_limit_reached_type,omitempty"`
-	PrimaryWindow      *UsageWindow `json:"primary_window,omitempty"`
-	SecondaryWindow    *UsageWindow `json:"secondary_window,omitempty"`
-	FetchedAt          string       `json:"fetched_at"`
+	Email            string       `json:"email,omitempty"`
+	PlanType         string       `json:"plan_type,omitempty"`
+	Allowed          bool         `json:"allowed"`
+	LimitReached     bool         `json:"limit_reached"`
+	RateLimitReached string       `json:"rate_limit_reached_type,omitempty"`
+	PrimaryWindow    *UsageWindow `json:"primary_window,omitempty"`
+	SecondaryWindow  *UsageWindow `json:"secondary_window,omitempty"`
+	FetchedAt        string       `json:"fetched_at"`
+	CacheAgeSeconds  int64        `json:"cache_age_seconds,omitempty"`
 }
 
 type UsageWindow struct {
@@ -61,6 +62,13 @@ type Registry struct {
 	logger       *slog.Logger
 	persistOAuth func(name string, oauth config.OAuthConfig) error
 	active       *ActiveTracker
+	usageCache   map[string]usageCacheEntry
+	usageTTL     time.Duration
+}
+
+type usageCacheEntry struct {
+	snapshot *UsageSnapshot
+	fetched  time.Time
 }
 
 type providerEntry struct {
@@ -71,9 +79,11 @@ type providerEntry struct {
 
 func NewRegistry(client *http.Client, logger *slog.Logger) *Registry {
 	return &Registry{
-		client: client,
-		logger: logger,
-		active: NewActiveTracker(),
+		client:     client,
+		logger:     logger,
+		active:     NewActiveTracker(),
+		usageCache: make(map[string]usageCacheEntry),
+		usageTTL:   45 * time.Second,
 	}
 }
 
@@ -86,6 +96,7 @@ func (r *Registry) RebuildFromConfig(cfgs []config.Provider) {
 	defer r.mu.Unlock()
 
 	r.providers = make([]providerEntry, 0, len(cfgs))
+	r.usageCache = make(map[string]usageCacheEntry)
 	for _, c := range cfgs {
 		var built Provider
 		switch c.Type {
@@ -152,9 +163,38 @@ func (r *Registry) SetOAuthPersister(fn func(name string, oauth config.OAuthConf
 	r.persistOAuth = fn
 }
 
-// TypeFor, bir provider'ın config'teki type değerini döndürür (küme adı).
-// Bilinmeyen provider için boş string döner.
 func (r *Registry) Usage(ctx context.Context, name string) (*UsageSnapshot, error) {
+	now := time.Now()
+	if usage := r.cachedUsage(name, now); usage != nil {
+		return usage, nil
+	}
+	usageProvider := r.usageProvider(name)
+	if usageProvider == nil {
+		return nil, nil
+	}
+	usage, err := usageProvider.Usage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if usage == nil {
+		return nil, nil
+	}
+	r.storeUsage(name, usage, now)
+	return usageWithCacheAge(usage, 0), nil
+}
+
+func (r *Registry) cachedUsage(name string, now time.Time) *UsageSnapshot {
+	r.mu.RLock()
+	entry, ok := r.usageCache[name]
+	ttl := r.usageTTL
+	r.mu.RUnlock()
+	if !ok || now.Sub(entry.fetched) >= ttl {
+		return nil
+	}
+	return usageWithCacheAge(entry.snapshot, int64(now.Sub(entry.fetched).Seconds()))
+}
+
+func (r *Registry) usageProvider(name string) UsageProvider {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, entry := range r.providers {
@@ -163,13 +203,30 @@ func (r *Registry) Usage(ctx context.Context, name string) (*UsageSnapshot, erro
 		}
 		usageProvider, ok := entry.provider.(UsageProvider)
 		if !ok {
-			return nil, nil
+			return nil
 		}
-		return usageProvider.Usage(ctx)
+		return usageProvider
 	}
-	return nil, nil
+	return nil
 }
 
+func (r *Registry) storeUsage(name string, usage *UsageSnapshot, fetched time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.usageCache[name] = usageCacheEntry{snapshot: usageWithCacheAge(usage, 0), fetched: fetched}
+}
+
+func usageWithCacheAge(usage *UsageSnapshot, ageSeconds int64) *UsageSnapshot {
+	if usage == nil {
+		return nil
+	}
+	clone := *usage
+	clone.CacheAgeSeconds = ageSeconds
+	return &clone
+}
+
+// TypeFor, bir provider'ın config'teki type değerini döndürür (küme adı).
+// Bilinmeyen provider için boş string döner.
 func (r *Registry) TypeFor(name string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
