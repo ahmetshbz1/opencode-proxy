@@ -80,6 +80,8 @@ function App() {
     })
   }, [health, tab])
 
+  const loading = health === null && error === null
+
   return (
     <main className="dark min-h-screen bg-background text-foreground">
       <section className="mx-auto max-w-7xl px-5 py-8 sm:px-6 lg:px-8 lg:py-10">
@@ -94,15 +96,31 @@ function App() {
         {error ? <Alert>{error}</Alert> : null}
 
         <section className="mt-8 grid gap-4 md:grid-cols-3">
-          <Metric icon={<Activity className="h-6 w-6" />} label="Status" value={health?.status ?? '-'} />
-          <Metric icon={<Server className="h-6 w-6" />} label="Port" value={health?.port?.toString() ?? '-'} />
-          <Metric icon={<Gauge className="h-6 w-6" />} label="Providers" value={health?.provider_count?.toString() ?? '-'} />
+          {loading ? (
+            <>
+              <MetricSkeleton />
+              <MetricSkeleton />
+              <MetricSkeleton />
+            </>
+          ) : (
+            <>
+              <Metric icon={<Activity className="h-6 w-6" />} label="Status" value={health?.status ?? '-'} />
+              <Metric icon={<Server className="h-6 w-6" />} label="Port" value={health?.port?.toString() ?? '-'} />
+              <Metric icon={<Gauge className="h-6 w-6" />} label="Providers" value={health?.provider_count?.toString() ?? '-'} />
+            </>
+          )}
         </section>
 
         <Tabs value={tab} onValueChange={setTab} onRefresh={() => void load()} />
 
         <section className="mt-6 grid gap-5">
-          {providers.map((provider) => <ProviderCard key={provider.name} provider={provider} />)}
+          {loading ? (
+            <>
+              <ProviderCardSkeleton />
+              <ProviderCardSkeleton />
+              <ProviderCardSkeleton />
+            </>
+          ) : providers.map((provider) => <ProviderCard key={provider.name} provider={provider} />)}
         </section>
       </section>
     </main>
@@ -117,6 +135,22 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
       </CardHeader>
       <CardContent>
         <strong className="block text-3xl font-black tracking-tight">{value}</strong>
+      </CardContent>
+    </Card>
+  )
+}
+
+function MetricSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-3">
+          <Skeleton className="size-6 rounded-md" />
+          <Skeleton className="h-3 w-24" />
+        </div>
+      </CardHeader>
+      <CardContent>
+        <Skeleton className="h-9 w-20" />
       </CardContent>
     </Card>
   )
@@ -148,6 +182,51 @@ function ProviderCard({ provider }: { provider: ProviderHealth }) {
           <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Models</p>
           <p className="mt-2 break-words text-foreground">{provider.models?.length ? provider.models.join(', ') : 'catch-all'}</p>
         </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function ProviderCardSkeleton() {
+  return (
+    <Card>
+      <CardHeader className="grid-cols-[1fr_auto]">
+        <div className="space-y-3">
+          <Skeleton className="h-7 w-72 max-w-full" />
+          <Skeleton className="h-4 w-52 max-w-full" />
+        </div>
+        <Skeleton className="h-7 w-20 rounded-md" />
+      </CardHeader>
+      <CardContent>
+        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+          <WindowCardSkeleton />
+          <WindowCardSkeleton />
+        </div>
+        <div className="mt-5 border-t border-border pt-4">
+          <Skeleton className="h-3 w-20" />
+          <Skeleton className="mt-3 h-5 w-96 max-w-full" />
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function WindowCardSkeleton() {
+  return (
+    <Card className="bg-popover/70">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3">
+          <Skeleton className="h-3 w-32" />
+          <Skeleton className="size-4 rounded-full" />
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-end justify-between gap-4">
+          <Skeleton className="h-9 w-24" />
+          <Skeleton className="h-4 w-24" />
+        </div>
+        <Skeleton className="mt-4 h-2 w-full rounded-full" />
+        <Skeleton className="mt-3 h-3 w-44" />
       </CardContent>
     </Card>
   )
@@ -204,6 +283,10 @@ function Progress({ value, tone, className }: { value: number; tone: Tone; class
       <div className={cn('h-full rounded-full transition-all', quotaBarClass(tone))} style={{ width: `${value}%` }} />
     </div>
   )
+}
+
+function Skeleton({ className }: { className?: string }) {
+  return <div className={cn('animate-pulse rounded-md bg-muted/70', className)} />
 }
 
 function Alert({ children }: { children: React.ReactNode }) {
