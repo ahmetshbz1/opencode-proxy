@@ -111,6 +111,37 @@ type codexUsage struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
+type codexWhamUsageResponse struct {
+	Email                string                    `json:"email"`
+	PlanType             string                    `json:"plan_type"`
+	RateLimit            codexRateLimit            `json:"rate_limit"`
+	RateLimitReachedType codexRateLimitReachedType `json:"rate_limit_reached_type"`
+}
+
+type codexRateLimitReachedType struct {
+	value string
+}
+
+type codexRateLimitReachedTypeObject struct {
+	Type   string `json:"type"`
+	Value  string `json:"value"`
+	Window string `json:"window"`
+}
+
+type codexRateLimit struct {
+	Allowed         bool             `json:"allowed"`
+	LimitReached    bool             `json:"limit_reached"`
+	PrimaryWindow   codexUsageWindow `json:"primary_window"`
+	SecondaryWindow codexUsageWindow `json:"secondary_window"`
+}
+
+type codexUsageWindow struct {
+	UsedPercent        int   `json:"used_percent"`
+	LimitWindowSeconds int64 `json:"limit_window_seconds"`
+	ResetAfterSeconds  int64 `json:"reset_after_seconds"`
+	ResetAt            int64 `json:"reset_at"`
+}
+
 type codexOutputItem struct {
 	Type             string             `json:"type"`
 	CallID           string             `json:"call_id"`
@@ -162,6 +193,93 @@ func NewCodex(cfg config.Provider, client *http.Client, logger *slog.Logger) *Co
 
 func (p *CodexProvider) Name() string  { return p.name }
 func (p *CodexProvider) Priority() int { return p.priority }
+
+func (p *CodexProvider) Usage(ctx context.Context) (*UsageSnapshot, error) {
+	token, err := p.accessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexUsageURL(p.baseURL), nil)
+	if err != nil {
+		return nil, err
+	}
+	applyCodexUsageHeaders(req, token)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("codex usage başarısız: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	var usage codexWhamUsageResponse
+	if err := json.Unmarshal(body, &usage); err != nil {
+		return nil, err
+	}
+	return usage.toSnapshot(time.Now()), nil
+}
+
+func (t *codexRateLimitReachedType) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		t.value = ""
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		t.value = text
+		return nil
+	}
+	var object codexRateLimitReachedTypeObject
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+	switch {
+	case object.Type != "":
+		t.value = object.Type
+	case object.Value != "":
+		t.value = object.Value
+	default:
+		t.value = object.Window
+	}
+	return nil
+}
+
+func (t codexRateLimitReachedType) String() string {
+	return t.value
+}
+
+func (u codexWhamUsageResponse) toSnapshot(now time.Time) *UsageSnapshot {
+	return &UsageSnapshot{
+		Email:            u.Email,
+		PlanType:         u.PlanType,
+		Allowed:          u.RateLimit.Allowed,
+		LimitReached:     u.RateLimit.LimitReached,
+		RateLimitReached: u.RateLimitReachedType.String(),
+		PrimaryWindow:    u.RateLimit.PrimaryWindow.toSnapshot(),
+		SecondaryWindow:  u.RateLimit.SecondaryWindow.toSnapshot(),
+		FetchedAt:        now.Format(time.RFC3339),
+	}
+}
+
+func (w codexUsageWindow) toSnapshot() *UsageWindow {
+	if w.LimitWindowSeconds == 0 && w.ResetAfterSeconds == 0 && w.ResetAt == 0 && w.UsedPercent == 0 {
+		return nil
+	}
+	out := &UsageWindow{
+		UsedPercent:        w.UsedPercent,
+		LimitWindowSeconds: w.LimitWindowSeconds,
+		ResetAfterSeconds:  w.ResetAfterSeconds,
+		ResetAt:            w.ResetAt,
+	}
+	if w.ResetAt > 0 {
+		out.ResetAtFormatted = time.Unix(w.ResetAt, 0).Format(time.RFC3339)
+	}
+	return out
+}
 
 func (p *CodexProvider) Proxy(ctx context.Context, w http.ResponseWriter, _ []byte, antReq anthropic.Request) error {
 	token, err := p.accessToken(ctx)
@@ -909,6 +1027,16 @@ func normalizeToolParameters(raw json.RawMessage) json.RawMessage {
 	return normalized
 }
 
+func applyCodexUsageHeaders(req *http.Request, token string) {
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", codexUserAgent)
+	req.Header.Set("Originator", "codex-tui")
+	req.Header.Set("Connection", "Keep-Alive")
+	req.Header.Set("x-openai-target-path", "/backend-api/wham/usage")
+	req.Header.Set("x-openai-target-route", "/backend-api/wham/usage")
+}
+
 func applyCodexRequestHeaders(req *http.Request, token string, stream bool) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -929,6 +1057,15 @@ func codexResponsesURL(baseURL string) string {
 		return trimmed
 	}
 	return trimmed + "/responses"
+}
+
+func codexUsageURL(baseURL string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	idx := strings.Index(trimmed, "/backend-api/")
+	if idx >= 0 {
+		return trimmed[:idx] + "/backend-api/wham/usage"
+	}
+	return "https://chatgpt.com/backend-api/wham/usage"
 }
 
 func codexStopReason(upstream string, hasToolCall bool) string {

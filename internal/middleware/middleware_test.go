@@ -117,6 +117,24 @@ func TestLogging(t *testing.T) {
 	}
 }
 
+func TestLoggingIgnoresDuplicateWriteHeader(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	duplicate := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := Logging(logger)(duplicate)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadGateway)
+	}
+}
+
 func TestLoggingPreservesFlusher(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

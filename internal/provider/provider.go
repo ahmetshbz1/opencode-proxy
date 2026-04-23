@@ -31,6 +31,29 @@ type Provider interface {
 	Proxy(ctx context.Context, w http.ResponseWriter, body []byte, req anthropic.Request) error
 }
 
+type UsageProvider interface {
+	Usage(ctx context.Context) (*UsageSnapshot, error)
+}
+
+type UsageSnapshot struct {
+	Email              string       `json:"email,omitempty"`
+	PlanType           string       `json:"plan_type,omitempty"`
+	Allowed            bool         `json:"allowed"`
+	LimitReached       bool         `json:"limit_reached"`
+	RateLimitReached   string       `json:"rate_limit_reached_type,omitempty"`
+	PrimaryWindow      *UsageWindow `json:"primary_window,omitempty"`
+	SecondaryWindow    *UsageWindow `json:"secondary_window,omitempty"`
+	FetchedAt          string       `json:"fetched_at"`
+}
+
+type UsageWindow struct {
+	UsedPercent        int    `json:"used_percent"`
+	LimitWindowSeconds int64  `json:"limit_window_seconds"`
+	ResetAfterSeconds  int64  `json:"reset_after_seconds"`
+	ResetAt            int64  `json:"reset_at"`
+	ResetAtFormatted   string `json:"reset_at_formatted,omitempty"`
+}
+
 type Registry struct {
 	mu           sync.RWMutex
 	providers    []providerEntry
@@ -131,6 +154,22 @@ func (r *Registry) SetOAuthPersister(fn func(name string, oauth config.OAuthConf
 
 // TypeFor, bir provider'ın config'teki type değerini döndürür (küme adı).
 // Bilinmeyen provider için boş string döner.
+func (r *Registry) Usage(ctx context.Context, name string) (*UsageSnapshot, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, entry := range r.providers {
+		if entry.provider.Name() != name {
+			continue
+		}
+		usageProvider, ok := entry.provider.(UsageProvider)
+		if !ok {
+			return nil, nil
+		}
+		return usageProvider.Usage(ctx)
+	}
+	return nil, nil
+}
+
 func (r *Registry) TypeFor(name string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

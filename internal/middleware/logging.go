@@ -14,10 +14,11 @@ type responseWriter struct {
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
-	if !rw.wrote {
-		rw.status = code
-		rw.wrote = true
+	if rw.wrote {
+		return
 	}
+	rw.status = code
+	rw.wrote = true
 	rw.ResponseWriter.WriteHeader(code)
 }
 

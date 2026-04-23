@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"opencode-proxy/internal/anthropic"
 	"opencode-proxy/internal/config"
@@ -73,6 +74,55 @@ func TestAnthropicFailover(t *testing.T) {
 	}
 	if !pe.Retryable {
 		t.Error("429 yeniden denenebilir olmalı")
+	}
+}
+
+func TestQuotaResetTimeUsesResetsInSeconds(t *testing.T) {
+	now := time.Unix(1000, 0)
+	err := &ProxyError{Message: `{"error":{"resets_at":9999,"resets_in_seconds":42}}`}
+
+	got := QuotaResetTime(err, now)
+	want := now.Add(42 * time.Second)
+
+	if !got.Equal(want) {
+		t.Fatalf("reset = %s, want %s", got, want)
+	}
+}
+
+func TestQuotaResetTimeUsesResetsAt(t *testing.T) {
+	now := time.Unix(1000, 0)
+	err := &ProxyError{Message: `{"error":{"resets_at":1600}}`}
+
+	got := QuotaResetTime(err, now)
+	want := time.Unix(1600, 0)
+
+	if !got.Equal(want) {
+		t.Fatalf("reset = %s, want %s", got, want)
+	}
+}
+
+func TestQuotaResetTimeFallsBackToDefault(t *testing.T) {
+	now := time.Unix(1000, 0)
+	err := &ProxyError{Message: `{"error":{"message":"usage limit reached"}}`}
+
+	got := QuotaResetTime(err, now)
+	want := now.Add(defaultExhaustedResetInterval)
+
+	if !got.Equal(want) {
+		t.Fatalf("reset = %s, want %s", got, want)
+	}
+}
+
+func TestActiveTrackerMarkExhaustedUntil(t *testing.T) {
+	tracker := NewActiveTracker()
+	tracker.MarkExhaustedUntil("codex", time.Now().Add(50*time.Millisecond))
+
+	if !tracker.IsExhausted("codex") {
+		t.Fatal("provider exhausted değil")
+	}
+	time.Sleep(70 * time.Millisecond)
+	if tracker.IsExhausted("codex") {
+		t.Fatal("provider reset süresi sonrası hâlâ exhausted")
 	}
 }
 

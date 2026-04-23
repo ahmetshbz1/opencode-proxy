@@ -202,6 +202,48 @@ func TestBuildCodexRequestIncludesToolResultBlockContent(t *testing.T) {
 	}
 }
 
+func TestCodexProviderUsageParsesObjectRateLimitReachedType(t *testing.T) {
+	usageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != "/backend-api/wham/usage" {
+			t.Fatalf("path = %q, want /backend-api/wham/usage", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"email":"limited@example.com",
+			"plan_type":"plus",
+			"rate_limit_reached_type":{"type":"primary","reset_after_seconds":3600},
+			"rate_limit":{
+				"allowed":false,
+				"limit_reached":true,
+				"primary_window":{"used_percent":100,"limit_window_seconds":18000,"reset_after_seconds":3600,"reset_at":1777017600},
+				"secondary_window":{"used_percent":52,"limit_window_seconds":604800,"reset_after_seconds":129552,"reset_at":1777449364}
+			}
+		}`))
+	}))
+	defer usageServer.Close()
+
+	p := NewCodex(config.Provider{
+		Name:    "codex",
+		Type:    "codex",
+		BaseURL: usageServer.URL + "/backend-api/codex",
+		OAuth: &config.OAuthConfig{
+			AccessToken: "access-token",
+			ExpiresAt:   time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}, usageServer.Client(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	usage, err := p.Usage(context.Background())
+	if err != nil {
+		t.Fatalf("Usage hatası: %v", err)
+	}
+	if usage.RateLimitReached != "primary" {
+		t.Fatalf("rate_limit_reached_type = %q, want primary", usage.RateLimitReached)
+	}
+	if usage.PrimaryWindow == nil || usage.PrimaryWindow.UsedPercent != 100 {
+		t.Fatalf("primary window ayrıştırılamadı: %#v", usage.PrimaryWindow)
+	}
+}
+
 func TestCodexProviderStreamEmitsToolArgumentsOnlyOnce(t *testing.T) {
 	codexServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

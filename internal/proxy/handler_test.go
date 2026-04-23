@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"opencode-proxy/internal/anthropic"
@@ -119,6 +120,165 @@ func TestHandlerRejectsMissingMaxTokensOutsideCountTokens(t *testing.T) {
 	}
 }
 
+func TestTryProvidersStopsOnCanceledContext(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registry := provider.NewRegistry(http.DefaultClient, logger)
+	h := NewHandler(registry, logger)
+	firstCalls := 0
+	secondCalls := 0
+	providers := []provider.Provider{
+		&mockProvider{name: "first", err: &provider.ProxyError{ProviderName: "first", StatusCode: 0, Message: "context canceled"}, calls: &firstCalls},
+		&mockProvider{name: "second", calls: &secondCalls},
+	}
+
+	result := h.tryProviders(context.Background(), httptest.NewRecorder(), providers, &requestContext{})
+
+	if result.err == nil {
+		t.Fatal("err = nil, want context canceled error")
+	}
+	if firstCalls != 1 {
+		t.Fatalf("first calls = %d, want 1", firstCalls)
+	}
+	if secondCalls != 0 {
+		t.Fatalf("second calls = %d, want 0", secondCalls)
+	}
+}
+
+func TestTryProvidersUsesStickyProviderOnly(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registry := provider.NewRegistry(http.DefaultClient, logger)
+	h := NewHandler(registry, logger)
+	firstCalls := 0
+	secondCalls := 0
+	providers := []provider.Provider{
+		&mockProvider{name: "first", calls: &firstCalls},
+		&mockProvider{name: "second", calls: &secondCalls},
+	}
+	reqCtx := &requestContext{request: anthropic.Request{Model: "gpt-5.4"}}
+
+	first := h.tryProviders(context.Background(), httptest.NewRecorder(), providers, reqCtx)
+	second := h.tryProviders(context.Background(), httptest.NewRecorder(), providers, reqCtx)
+
+	if first.err != nil {
+		t.Fatalf("first err = %v, want nil", first.err)
+	}
+	if second.err != nil {
+		t.Fatalf("second err = %v, want nil", second.err)
+	}
+	if firstCalls != 2 {
+		t.Fatalf("first calls = %d, want 2", firstCalls)
+	}
+	if secondCalls != 0 {
+		t.Fatalf("second calls = %d, want 0", secondCalls)
+	}
+}
+
+func TestTryProvidersStopsOnStickyProviderLimit(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registry := provider.NewRegistry(http.DefaultClient, logger)
+	h := NewHandler(registry, logger)
+	registry.Active().SetCurrent("gpt-5.4", "first")
+	firstCalls := 0
+	secondCalls := 0
+	providers := []provider.Provider{
+		&mockProvider{name: "first", err: &provider.ProxyError{ProviderName: "first", StatusCode: http.StatusTooManyRequests, Message: "usage limit reached"}, calls: &firstCalls},
+		&mockProvider{name: "second", calls: &secondCalls},
+	}
+	reqCtx := &requestContext{request: anthropic.Request{Model: "gpt-5.4"}}
+
+	result := h.tryProviders(context.Background(), httptest.NewRecorder(), providers, reqCtx)
+
+	if result.err == nil {
+		t.Fatal("err = nil, want quota error")
+	}
+	if !result.limited {
+		t.Fatal("limited = false, want true")
+	}
+	if firstCalls != 1 {
+		t.Fatalf("first calls = %d, want 1", firstCalls)
+	}
+	if secondCalls != 0 {
+		t.Fatalf("second calls = %d, want 0", secondCalls)
+	}
+	if registry.Active().Current("gpt-5.4") != "" {
+		t.Fatal("current provider temizlenmedi")
+	}
+}
+
+func TestTryProviderRetriesRetryableError(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registry := provider.NewRegistry(http.DefaultClient, logger)
+	h := NewHandler(registry, logger)
+	calls := 0
+	p := &mockProvider{
+		name:  "retryable",
+		err:   &provider.ProxyError{ProviderName: "retryable", StatusCode: http.StatusBadGateway, Message: "upstream failed", Retryable: true},
+		calls: &calls,
+	}
+
+	result := h.tryProvider(context.Background(), httptest.NewRecorder(), p, &requestContext{})
+
+	if result.err == nil {
+		t.Fatal("err = nil, want retryable error")
+	}
+	if calls != providerRetryAttempts {
+		t.Fatalf("calls = %d, want %d", calls, providerRetryAttempts)
+	}
+}
+
+func TestTryProviderDoesNotRetryQuotaError(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registry := provider.NewRegistry(http.DefaultClient, logger)
+	h := NewHandler(registry, logger)
+	calls := 0
+	p := &mockProvider{
+		name:  "limited",
+		err:   &provider.ProxyError{ProviderName: "limited", StatusCode: http.StatusTooManyRequests, Message: "usage limit reached", Retryable: true},
+		calls: &calls,
+	}
+
+	result := h.tryProvider(context.Background(), httptest.NewRecorder(), p, &requestContext{})
+
+	if result.err == nil {
+		t.Fatal("err = nil, want quota error")
+	}
+	if !result.limited {
+		t.Fatal("limited = false, want true")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
+func TestHandlerAllProvidersLimitedReturnsTooManyRequests(t *testing.T) {
+	limitedCalls := 0
+	limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limitedCalls++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"usage limit reached"}`))
+	}))
+	defer limited.Close()
+
+	h := newConfiguredHandler([]config.Provider{
+		{Name: "limited", Type: "anthropic", BaseURL: limited.URL, APIKey: "k", Priority: 0, Models: []string{"gpt-5.4"}},
+	})
+
+	body, _ := json.Marshal(anthropic.Request{Model: "gpt-5.4", MaxTokens: 100, Messages: []anthropic.Message{{Role: "user", Content: json.RawMessage(`"merhaba"`)}}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if limitedCalls != 1 {
+		t.Fatalf("limited calls = %d, want 1", limitedCalls)
+	}
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+	}
+	if !strings.Contains(w.Body.String(), "sağlayıcı limiti doldu") {
+		t.Fatalf("body = %q, want limit message", w.Body.String())
+	}
+}
+
 func TestHandlerAllProvidersFail(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	registry := provider.NewRegistry(http.DefaultClient, logger)
@@ -214,7 +374,7 @@ func TestHandlerCountTokensSkipsCatchAllForExplicitModel(t *testing.T) {
 	}
 }
 
-func TestHandlerRoutesGLMOnlyWithinGLMProviders(t *testing.T) {
+func TestHandlerDoesNotFallbackAcrossGLMProvidersOnLimit(t *testing.T) {
 	zaiCalls := 0
 	opencodeCalls := 0
 	codexCalls := 0
@@ -254,13 +414,13 @@ func TestHandlerRoutesGLMOnlyWithinGLMProviders(t *testing.T) {
 	if zaiCalls == 0 {
 		t.Fatal("z.ai hiç çağrılmadı")
 	}
-	if opencodeCalls == 0 {
-		t.Fatal("opencode-go hiç çağrılmadı")
+	if opencodeCalls != 0 {
+		t.Fatalf("opencode-go %d kez çağrıldı, want 0", opencodeCalls)
 	}
 	if codexCalls != 0 {
 		t.Fatalf("codex %d kez çağrıldı, want 0", codexCalls)
 	}
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
 	}
 }

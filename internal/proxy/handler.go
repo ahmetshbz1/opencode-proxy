@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"opencode-proxy/internal/anthropic"
 	"opencode-proxy/internal/middleware"
@@ -20,11 +21,18 @@ type Handler struct {
 	logger   *slog.Logger
 }
 
+const providerRetryAttempts = 3
+
 type requestContext struct {
 	body         []byte
 	request      anthropic.Request
 	apiKey       string
 	isTokenCount bool
+}
+
+type providerAttemptResult struct {
+	err     error
+	limited bool
 }
 
 func NewHandler(registry *provider.Registry, logger *slog.Logger) *Handler {
@@ -107,30 +115,57 @@ func (h *Handler) handleMessage(ctx context.Context, w http.ResponseWriter, reqC
 		sse.WriteError(w, http.StatusBadGateway, "yapılandırılmış sağlayıcı yok (model: "+reqCtx.request.Model+")")
 		return
 	}
-	startIdx := h.registry.Active().NextRRIndex(reqCtx.request.Model, len(providers))
-	lastErr := h.tryProviders(ctx, w, providers, reqCtx, startIdx)
-	if lastErr == nil {
+	result := h.tryProviders(ctx, w, providers, reqCtx)
+	if result.err == nil {
 		return
 	}
-	h.logger.Warn("tüm sağlayıcılar limit dolmuş, sıfırlanıyor ve tekrar deneniyor",
-		slog.String("request_id", middleware.GetRequestID(ctx)),
-	)
-	h.registry.Active().ResetAll()
-	lastErr = h.tryProviders(ctx, w, providers, reqCtx, 0)
-	if lastErr != nil {
-		sse.WriteError(w, http.StatusBadGateway, "tüm sağlayıcılar başarısız oldu: "+lastErr.Error())
+	if provider.IsCanceledError(result.err) {
 		return
 	}
-	sse.WriteError(w, http.StatusBadGateway, "yapılandırılmış sağlayıcı yok (model: "+reqCtx.request.Model+")")
+	if result.limited {
+		sse.WriteError(w, http.StatusTooManyRequests, "sağlayıcı limiti doldu: "+result.err.Error())
+		return
+	}
+	if !h.hasAvailableProvider(providers) {
+		sse.WriteError(w, http.StatusBadGateway, "aktif sağlayıcı yok (model: "+reqCtx.request.Model+")")
+		return
+	}
+	sse.WriteError(w, http.StatusBadGateway, "tüm sağlayıcılar başarısız oldu: "+result.err.Error())
 }
 
-func (h *Handler) tryProviders(ctx context.Context, w http.ResponseWriter, providers []provider.Provider, reqCtx *requestContext, startIdx int) error {
+func (h *Handler) hasAvailableProvider(providers []provider.Provider) bool {
+	active := h.registry.Active()
+	for _, p := range providers {
+		if !active.IsExhausted(p.Name()) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) stickyOrder(model string, providers []provider.Provider) []provider.Provider {
+	current := h.registry.Active().Current(model)
+	if current == "" {
+		return providers
+	}
+	for _, p := range providers {
+		if p.Name() == current {
+			return []provider.Provider{p}
+		}
+	}
+	h.registry.Active().ClearCurrent(model, current)
+	return providers
+}
+
+func (h *Handler) tryProviders(ctx context.Context, w http.ResponseWriter, providers []provider.Provider, reqCtx *requestContext) providerAttemptResult {
 	active := h.registry.Active()
 	reqID := middleware.GetRequestID(ctx)
-	var lastErr error
-	for i := range len(providers) {
-		idx := (startIdx + i) % len(providers)
-		p := providers[idx]
+	ordered := h.stickyOrder(reqCtx.request.Model, providers)
+	result := providerAttemptResult{}
+	for _, p := range ordered {
+		if err := ctx.Err(); err != nil {
+			return providerAttemptResult{err: err}
+		}
 		if active.IsExhausted(p.Name()) {
 			h.logger.Debug("sağlayıcı limiti dolmuş, atlanıyor",
 				slog.String("provider", p.Name()),
@@ -138,29 +173,104 @@ func (h *Handler) tryProviders(ctx context.Context, w http.ResponseWriter, provi
 			)
 			continue
 		}
+		if h.refreshUsageLimit(ctx, p) {
+			active.ClearCurrent(reqCtx.request.Model, p.Name())
+			continue
+		}
+		attempt := h.tryProvider(ctx, w, p, reqCtx)
+		if attempt.err == nil {
+			active.ClearExhausted(p.Name())
+			active.SetCurrent(reqCtx.request.Model, p.Name())
+			return attempt
+		}
+		result = attempt
+		if provider.IsCanceledError(attempt.err) {
+			h.logger.Warn("istemci isteği iptal etti, failover durduruluyor",
+				slog.String("provider", p.Name()),
+				slog.String("error", attempt.err.Error()),
+				slog.String("request_id", reqID),
+			)
+			return attempt
+		}
+		if attempt.limited {
+			active.MarkExhaustedUntil(p.Name(), provider.QuotaResetTime(attempt.err, time.Now()))
+			active.ClearCurrent(reqCtx.request.Model, p.Name())
+			return attempt
+		}
+		h.logger.Warn("sağlayıcı hata, sonrakine geçiliyor",
+			slog.String("provider", p.Name()),
+			slog.String("error", attempt.err.Error()),
+			slog.String("request_id", reqID),
+		)
+	}
+	return result
+}
+
+func (h *Handler) refreshUsageLimit(ctx context.Context, p provider.Provider) bool {
+	usageProvider, ok := p.(provider.UsageProvider)
+	if !ok {
+		return false
+	}
+	usageCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	usage, err := usageProvider.Usage(usageCtx)
+	if err != nil {
+		h.logger.Debug("sağlayıcı kullanım limiti okunamadı",
+			slog.String("provider", p.Name()),
+			slog.String("error", err.Error()),
+			slog.String("request_id", middleware.GetRequestID(ctx)),
+		)
+		return false
+	}
+	if h.registry.Active().ApplyUsageLimit(p.Name(), usage, time.Now()) {
+		h.logger.Warn("sağlayıcı usage endpoint'e göre limitte, atlanıyor",
+			slog.String("provider", p.Name()),
+			slog.String("request_id", middleware.GetRequestID(ctx)),
+		)
+		return true
+	}
+	return false
+}
+
+func (h *Handler) tryProvider(ctx context.Context, w http.ResponseWriter, p provider.Provider, reqCtx *requestContext) providerAttemptResult {
+	reqID := middleware.GetRequestID(ctx)
+	attempts := 1
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return providerAttemptResult{err: err}
+		}
 		h.attachRequestInfo(ctx, p.Name())
 		err := p.Proxy(ctx, w, reqCtx.body, reqCtx.request)
 		if err == nil {
-			active.ClearExhausted(p.Name())
-			return nil
+			return providerAttemptResult{}
 		}
-		lastErr = err
 		if provider.IsQuotaError(err) {
 			h.logger.Warn("sağlayıcı limiti doldu, sonrakine geçiliyor",
 				slog.String("provider", p.Name()),
 				slog.String("error", err.Error()),
 				slog.String("request_id", reqID),
 			)
-			active.MarkExhausted(p.Name())
+			return providerAttemptResult{err: err, limited: true}
+		}
+		if provider.IsCanceledError(err) {
+			return providerAttemptResult{err: err}
+		}
+		if attempt == 1 && provider.IsRetryableError(err) {
+			attempts = providerRetryAttempts
+		}
+		if attempt < attempts {
+			h.logger.Warn("sağlayıcı geçici hata verdi, yeniden deneniyor",
+				slog.String("provider", p.Name()),
+				slog.Int("attempt", attempt),
+				slog.Int("max_attempts", attempts),
+				slog.String("error", err.Error()),
+				slog.String("request_id", reqID),
+			)
 			continue
 		}
-		h.logger.Warn("sağlayıcı hata, sonrakine geçiliyor",
-			slog.String("provider", p.Name()),
-			slog.String("error", err.Error()),
-			slog.String("request_id", reqID),
-		)
+		return providerAttemptResult{err: err}
 	}
-	return lastErr
+	return providerAttemptResult{err: errors.New("sağlayıcı denemesi tamamlanamadı")}
 }
 
 func (h *Handler) attachRequestInfo(ctx context.Context, providerName string) {
