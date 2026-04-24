@@ -7,6 +7,7 @@ health-ui:
 	bun install --cwd health-ui --frozen-lockfile
 	bun run --cwd health-ui build
 	rm -rf internal/proxy/health_assets/*
+	mkdir -p internal/proxy/health_assets
 	cp -R health-ui/dist/. internal/proxy/health_assets/
 
 run:

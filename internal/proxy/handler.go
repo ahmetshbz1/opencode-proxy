@@ -148,10 +148,22 @@ func (h *Handler) stickyOrder(model string, providers []provider.Provider) []pro
 	if current == "" {
 		return providers
 	}
+	ordered := make([]provider.Provider, 0, len(providers))
+	found := false
 	for _, p := range providers {
 		if p.Name() == current {
-			return []provider.Provider{p}
+			ordered = append(ordered, p)
+			found = true
+			break
 		}
+	}
+	if found {
+		for _, p := range providers {
+			if p.Name() != current {
+				ordered = append(ordered, p)
+			}
+		}
+		return ordered
 	}
 	h.registry.Active().ClearCurrent(model, current)
 	return providers
@@ -166,14 +178,23 @@ func (h *Handler) tryProviders(ctx context.Context, w http.ResponseWriter, provi
 		if err := ctx.Err(); err != nil {
 			return providerAttemptResult{err: err}
 		}
-		if active.IsExhausted(p.Name()) {
+		providerType := h.registry.TypeFor(p.Name())
+		if active.IsExhausted(p.Name()) && providerType != "codex" {
+			result = providerAttemptResult{
+				err:     errors.New("sağlayıcı limiti dolu: " + p.Name()),
+				limited: true,
+			}
 			h.logger.Debug("sağlayıcı limiti dolmuş, atlanıyor",
 				slog.String("provider", p.Name()),
 				slog.String("request_id", reqID),
 			)
 			continue
 		}
-		if h.refreshUsageLimit(ctx, p) {
+		if providerType != "codex" && h.refreshUsageLimit(ctx, p) {
+			result = providerAttemptResult{
+				err:     errors.New("sağlayıcı usage endpoint'e göre limitte: " + p.Name()),
+				limited: true,
+			}
 			active.ClearCurrent(reqCtx.request.Model, p.Name())
 			continue
 		}
@@ -195,13 +216,19 @@ func (h *Handler) tryProviders(ctx context.Context, w http.ResponseWriter, provi
 		if attempt.limited {
 			active.MarkExhaustedUntil(p.Name(), provider.QuotaResetTime(attempt.err, time.Now()))
 			active.ClearCurrent(reqCtx.request.Model, p.Name())
-			return attempt
+			if providerType != "codex" {
+				return attempt
+			}
+			continue
 		}
 		h.logger.Warn("sağlayıcı hata, sonrakine geçiliyor",
 			slog.String("provider", p.Name()),
 			slog.String("error", attempt.err.Error()),
 			slog.String("request_id", reqID),
 		)
+	}
+	if result.err == nil {
+		result.err = errors.New("denenebilir sağlayıcı bulunamadı")
 	}
 	return result
 }

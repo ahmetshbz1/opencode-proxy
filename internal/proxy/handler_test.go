@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"opencode-proxy/internal/anthropic"
 	"opencode-proxy/internal/config"
@@ -273,6 +274,125 @@ func TestHandlerAllProvidersLimitedReturnsTooManyRequests(t *testing.T) {
 	}
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+	}
+	if !strings.Contains(w.Body.String(), "sağlayıcı limiti doldu") {
+		t.Fatalf("body = %q, want limit message", w.Body.String())
+	}
+}
+
+func TestHandlerFallsBackAcrossCodexProvidersOnLimit(t *testing.T) {
+	limitedCalls := 0
+	readyCalls := 0
+
+	limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limitedCalls++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"usage limit reached","resets_in_seconds":60}}`))
+	}))
+	defer limited.Close()
+
+	ready := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		readyCalls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp-ready","model":"gpt-5.4","stop_reason":"stop","output":[{"type":"message","content":[{"type":"output_text","text":"tamam"}]}],"usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ready.Close()
+
+	h := newConfiguredHandler([]config.Provider{
+		{Name: "limited-codex", Type: "codex", BaseURL: limited.URL, APIKey: "token", Priority: 0, Models: []string{"gpt-5.4"}},
+		{Name: "ready-codex", Type: "codex", BaseURL: ready.URL, APIKey: "token", Priority: 1, Models: []string{"gpt-5.4"}},
+	})
+	h.registry.Active().SetCurrent("gpt-5.4", "limited-codex")
+
+	body, _ := json.Marshal(anthropic.Request{Model: "gpt-5.4", MaxTokens: 100, Messages: []anthropic.Message{{Role: "user", Content: json.RawMessage(`"merhaba"`)}}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if limitedCalls != 1 {
+		t.Fatalf("limited calls = %d, want 1", limitedCalls)
+	}
+	if readyCalls != 1 {
+		t.Fatalf("ready calls = %d, want 1", readyCalls)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%q", w.Code, http.StatusOK, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "tamam") {
+		t.Fatalf("body = %q, want ready provider response", w.Body.String())
+	}
+	if h.registry.Active().Current("gpt-5.4") != "ready-codex" {
+		t.Fatalf("current provider = %q, want ready-codex", h.registry.Active().Current("gpt-5.4"))
+	}
+}
+
+func TestHandlerRetriesCodexProvidersEvenWhenMarkedExhausted(t *testing.T) {
+	exhaustedCalls := 0
+	readyCalls := 0
+
+	exhausted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		exhaustedCalls++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"usage limit reached","resets_in_seconds":60}}`))
+	}))
+	defer exhausted.Close()
+
+	ready := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		readyCalls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp-ready","model":"gpt-5.4","stop_reason":"stop","output":[{"type":"message","content":[{"type":"output_text","text":"tamam"}]}],"usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ready.Close()
+
+	h := newConfiguredHandler([]config.Provider{
+		{Name: "exhausted-codex", Type: "codex", BaseURL: exhausted.URL, APIKey: "token", Priority: 0, Models: []string{"gpt-5.4"}},
+		{Name: "ready-codex", Type: "codex", BaseURL: ready.URL, APIKey: "token", Priority: 1, Models: []string{"gpt-5.4"}},
+	})
+	h.registry.Active().MarkExhaustedUntil("exhausted-codex", time.Now().Add(time.Hour))
+	h.registry.Active().MarkExhaustedUntil("ready-codex", time.Now().Add(time.Hour))
+
+	body, _ := json.Marshal(anthropic.Request{Model: "gpt-5.4", MaxTokens: 100, Messages: []anthropic.Message{{Role: "user", Content: json.RawMessage(`"merhaba"`)}}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if exhaustedCalls != 1 {
+		t.Fatalf("exhausted calls = %d, want 1", exhaustedCalls)
+	}
+	if readyCalls != 1 {
+		t.Fatalf("ready calls = %d, want 1", readyCalls)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%q", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+func TestHandlerExhaustedProvidersDoNotReturnEmptyOK(t *testing.T) {
+	providerCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg-test","type":"message"}`))
+	}))
+	defer upstream.Close()
+
+	h := newConfiguredHandler([]config.Provider{
+		{Name: "limited", Type: "anthropic", BaseURL: upstream.URL, APIKey: "k", Priority: 0, Models: []string{"gpt-5.4"}},
+	})
+	h.registry.Active().MarkExhaustedUntil("limited", time.Now().Add(time.Hour))
+
+	body, _ := json.Marshal(anthropic.Request{Model: "gpt-5.4", MaxTokens: 100, Messages: []anthropic.Message{{Role: "user", Content: json.RawMessage(`"merhaba"`)}}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if providerCalls != 0 {
+		t.Fatalf("provider calls = %d, want 0", providerCalls)
+	}
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d; body=%q", w.Code, http.StatusTooManyRequests, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), "sağlayıcı limiti doldu") {
 		t.Fatalf("body = %q, want limit message", w.Body.String())
